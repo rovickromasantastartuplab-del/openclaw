@@ -500,6 +500,125 @@ node skills/codebase-scanner/scripts/scan.cjs --deep --stack --metrics /path/to/
 - For each key file: show class name, namespace, public methods, key imports
 - Include brief excerpts of critical code (first 50 lines of important files)
 
+## Auto-Save Report
+
+After every scan, automatically save the full report as a downloadable `.md` file.
+
+### Save Behavior
+1. **File name format:** `{project-name}-scan-{YYYY-MM-DD}.md`
+   - Example: `ribo-staging-scan-2026-04-02.md`
+   - `project-name` is derived from the scanned directory name, lowercased and slugified
+2. **Save location:** project root directory. If a `/reports` folder exists in the project, save there instead.
+3. **Print the file path** after saving so the user knows where to find it.
+4. **Never truncate any section.** If a table has 121 rows, write all 121 rows.
+
+### Report File Format
+
+The saved `.md` file must follow this exact section order:
+
+```markdown
+# {Project Name} — Scan Report
+
+> Scanned: {YYYY-MM-DD HH:MM UTC}
+> Target: `/path/to/project`
+
+---
+
+## Project Overview
+
+| Field | Value |
+|---|---|
+| Name | {name} |
+| Type | {type} |
+| Stack | {languages, frameworks} |
+
+## Directory Structure
+
+```
+{full ASCII folder tree in a fenced code block}
+```
+
+## Database Tables
+
+| # | Table Name |
+|---|---|
+| 1 | `table_name_1` |
+| 2 | `table_name_2` |
+| ... | ... |
+
+## API Routes
+
+| Method | Path | Controller@Method | Middleware |
+|---|---|---|---|
+| GET | /path | Controller@index | auth |
+| POST | /path | Controller@store | auth, throttle |
+
+## Controllers
+
+| File Name | Class Name |
+|---|---|
+| LeadController.php | LeadController |
+| InvoiceController.php | InvoiceController |
+
+## Models
+
+| File Name | Class Name | Table |
+|---|---|---|
+| Lead.php | Lead | leads |
+| Invoice.php | Invoice | invoices |
+
+## Services
+
+| File Name | Class Name | Public Methods |
+|---|---|---|
+| GmailService.php | GmailService | syncThreads, refreshTokenIfNeeded |
+| TwilioService.php | TwilioService | sendTemplateMessageWithLanguage |
+
+## Events & Listeners
+
+| Event Class | Listener Class |
+|---|---|
+| LeadAssigned | SendAssignLeadEmail |
+| LeadAssigned | TwilioLeadCreateListener |
+
+## Authentication
+
+| Guard | Driver |
+|---|---|
+| web | session |
+
+| Provider | Driver |
+|---|---|
+| users | eloquent |
+
+**Middleware:** list all auth-related middleware
+
+**Features:** RBAC, 2FA, OAuth, etc.
+
+## Architecture Observations
+
+- {bullet point findings about the codebase}
+- {patterns detected}
+- {potential issues or recommendations}
+```
+
+### CLI Flag: `--save`
+- Default behavior: auto-save is ON for all scans
+- `--no-save`: skip file saving (terminal output only)
+- `--save-dir=/custom/path`: override save location
+
+```bash
+# Scan and auto-save report
+node skills/codebase-scanner/scripts/scan.cjs --deep /path/to/project
+# Output: Report saved to: /path/to/project/ribo-staging-scan-2026-04-02.md
+
+# Scan without saving
+node skills/codebase-scanner/scripts/scan.cjs --deep --no-save /path/to/project
+
+# Scan with custom save location
+node skills/codebase-scanner/scripts/scan.cjs --deep --save-dir=/tmp/reports /path/to/project
+```
+
 ## Related skills
 
 - `security-audit` — Scan for exposed credentials, weak configs, and vulnerabilities

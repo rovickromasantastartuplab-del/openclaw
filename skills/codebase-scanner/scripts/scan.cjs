@@ -161,6 +161,8 @@ function parseArgs() {
     depth: 4,
     exclude: [],
     deep: false,
+    noSave: false,
+    saveDir: null,
   };
 
   for (const arg of args) {
@@ -173,6 +175,8 @@ function parseArgs() {
     else if (arg === '--metrics') opts.flags.add('metrics');
     else if (arg === '--entrypoints') opts.flags.add('entrypoints');
     else if (arg === '--markdown') opts.flags.add('markdown');
+    else if (arg === '--no-save') opts.noSave = true;
+    else if (arg.startsWith('--save-dir=')) opts.saveDir = arg.split('=').slice(1).join('=');
     else if (arg.startsWith('--depth=')) opts.depth = parseInt(arg.split('=')[1], 10) || opts.depth;
     else if (arg.startsWith('--exclude=')) opts.exclude = arg.split('=')[1].split(',');
     else if (arg.startsWith('-') && !arg.startsWith('--')) {
@@ -2365,6 +2369,232 @@ function main() {
   } else {
     console.log(formatMarkdown(result, target));
   }
+
+  // Auto-save report as .md file
+  if (!opts.noSave && !opts.json) {
+    try {
+      const reportMd = generateReportFile(result, target);
+      const projectName = path.basename(target).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      const date = new Date().toISOString().split('T')[0];
+      const fileName = `${projectName}-scan-${date}.md`;
+
+      // Determine save location: --save-dir > /reports folder > project root
+      let saveDir = opts.saveDir || target;
+      if (!opts.saveDir) {
+        const reportsDir = path.join(target, 'reports');
+        if (fs.existsSync(reportsDir) && fs.statSync(reportsDir).isDirectory()) {
+          saveDir = reportsDir;
+        }
+      }
+
+      const savePath = path.join(saveDir, fileName);
+      fs.writeFileSync(savePath, reportMd, 'utf-8');
+      console.error(`\n📄 Report saved to: ${savePath}`);
+    } catch (err) {
+      console.error(`\n⚠️ Could not save report: ${err.message}`);
+    }
+  }
+}
+
+// ─── Report File Generator ───────────────────────────────────────────────────
+
+function generateReportFile(result, target) {
+  const projectName = path.basename(target);
+  const now = new Date().toISOString().replace('T', ' ').split('.')[0] + ' UTC';
+  let md = '';
+
+  md += `# ${projectName} — Scan Report\n\n`;
+  md += `> Scanned: ${now}\n`;
+  md += `> Target: \`${target}\`\n\n---\n\n`;
+
+  // Project Overview
+  md += `## Project Overview\n\n`;
+  md += `| Field | Value |\n|---|---|\n`;
+  if (result.overview) {
+    md += `| Name | ${result.overview.name || projectName} |\n`;
+    md += `| Type | ${result.overview.type || 'Unknown'} |\n`;
+    if (result.overview.description) md += `| Description | ${result.overview.description} |\n`;
+    if (result.overview.version) md += `| Version | ${result.overview.version} |\n`;
+    if (result.overview.license) md += `| License | ${result.overview.license} |\n`;
+  }
+  if (result.stack) {
+    const parts = [];
+    if (result.stack.languages?.length) parts.push(result.stack.languages.join(', '));
+    if (result.stack.frameworks?.length) parts.push(result.stack.frameworks.join(', '));
+    if (result.stack.runtimes?.length) parts.push(`Runtime: ${result.stack.runtimes.join(', ')}`);
+    md += `| Stack | ${parts.join(' · ') || 'N/A'} |\n`;
+  }
+  md += `\n`;
+
+  // Directory Structure
+  md += `## Directory Structure\n\n`;
+  if (result.structure) {
+    md += `\`\`\`\n${result.structure}\`\`\`\n\n`;
+  } else {
+    md += `*(not scanned — use --structure or --full flag)*\n\n`;
+  }
+
+  // Database Tables
+  md += `## Database Tables\n\n`;
+  if (result.databaseSchema && result.databaseSchema.length) {
+    md += `| # | Table Name |\n|---|---|\n`;
+    result.databaseSchema.forEach((t, i) => {
+      md += `| ${i + 1} | \`${t.name}\` |\n`;
+    });
+  } else {
+    md += `*(no database tables detected)*\n`;
+  }
+  md += `\n`;
+
+  // API Routes
+  md += `## API Routes\n\n`;
+  if (result.apiEndpoints && result.apiEndpoints.length) {
+    md += `| Method | Path | Controller@Method | Middleware |\n|---|---|---|---|\n`;
+    result.apiEndpoints.forEach(ep => {
+      const ctrl = ep.controller ? `${ep.controller}${ep.action ? '@' + ep.action : ''}` : (ep.action || '-');
+      const mw = ep.middleware || '-';
+      md += `| ${ep.method} | ${ep.path} | ${ctrl} | ${mw} |\n`;
+    });
+  } else {
+    md += `*(no routes detected — use --deep flag)*\n`;
+  }
+  md += `\n`;
+
+  // Controllers
+  md += `## Controllers\n\n`;
+  if (result.controllers && result.controllers.length) {
+    md += `| File Name | Class Name |\n|---|---|\n`;
+    result.controllers.forEach(c => {
+      md += `| ${c.file} | ${c.class} |\n`;
+    });
+  } else {
+    md += `*(no controllers detected — use --deep flag)*\n`;
+  }
+  md += `\n`;
+
+  // Models
+  md += `## Models\n\n`;
+  if (result.models && result.models.length) {
+    md += `| File Name | Class Name | Table |\n|---|---|---|\n`;
+    result.models.forEach(m => {
+      md += `| ${m.file} | ${m.class} | ${m.table || '-'} |\n`;
+    });
+  } else {
+    md += `*(no models detected — use --deep flag)*\n`;
+  }
+  md += `\n`;
+
+  // Services
+  md += `## Services\n\n`;
+  if (result.services && result.services.length) {
+    md += `| File Name | Class Name | Public Methods |\n|---|---|---|\n`;
+    result.services.forEach(s => {
+      md += `| ${s.file} | ${s.class} | ${s.methods || '-'} |\n`;
+    });
+  } else {
+    md += `*(no services detected — use --deep flag)*\n`;
+  }
+  md += `\n`;
+
+  // Events & Listeners
+  md += `## Events & Listeners\n\n`;
+  if (result.eventSystem && result.eventSystem.pairs && result.eventSystem.pairs.length) {
+    md += `| Event Class | Listener Class |\n|---|---|\n`;
+    result.eventSystem.pairs.forEach(p => {
+      md += `| ${p.event} | ${p.listener} |\n`;
+    });
+  } else if (result.eventSystem && result.eventSystem.events && result.eventSystem.events.length) {
+    md += `| Event Class | Listener Class |\n|---|---|\n`;
+    result.eventSystem.events.forEach(e => {
+      const listeners = result.eventSystem.listeners
+        ?.filter(l => l.handles === e.name)
+        ?.map(l => l.name) || [];
+      if (listeners.length) {
+        listeners.forEach(l => {
+          md += `| ${e.name} | ${l} |\n`;
+        });
+      } else {
+        md += `| ${e.name} | - |\n`;
+      }
+    });
+  } else {
+    md += `*(no events detected — use --deep flag)*\n`;
+  }
+  md += `\n`;
+
+  // Authentication
+  md += `## Authentication\n\n`;
+  if (result.authentication) {
+    const auth = result.authentication;
+    if (auth.guards && auth.guards.length) {
+      md += `| Guard | Driver |\n|---|---|\n`;
+      auth.guards.forEach(g => {
+        md += `| ${g.name} | ${g.driver} |\n`;
+      });
+      md += `\n`;
+    }
+    if (auth.providers && auth.providers.length) {
+      md += `| Provider | Driver |\n|---|---|\n`;
+      auth.providers.forEach(p => {
+        md += `| ${p.name} | ${p.driver} |\n`;
+      });
+      md += `\n`;
+    }
+    if (auth.middleware && auth.middleware.length) {
+      md += `**Middleware:**\n`;
+      auth.middleware.forEach(m => {
+        md += `- ${m}\n`;
+      });
+      md += `\n`;
+    }
+    if (auth.details && auth.details.length) {
+      md += `**Features:**\n`;
+      auth.details.forEach(d => {
+        md += `- ${d}\n`;
+      });
+      md += `\n`;
+    }
+  } else {
+    md += `*(no auth info detected — use --deep flag)*\n\n`;
+  }
+
+  // Architecture Observations
+  md += `## Architecture Observations\n\n`;
+  if (result.architecturePatterns && result.architecturePatterns.patterns && result.architecturePatterns.patterns.length) {
+    result.architecturePatterns.patterns.forEach(p => {
+      md += `- **${p.pattern}**: ${p.evidence || 'detected'}\n`;
+    });
+    md += `\n`;
+  }
+  // Add general observations from other modules
+  const observations = [];
+  if (result.metrics) {
+    if (result.metrics.testFileCount < result.metrics.totalFiles * 0.01) {
+      observations.push(`⚠️ Low test coverage: ${result.metrics.testFileCount} test files for ${result.metrics.totalFiles} source files`);
+    }
+    if (result.metrics.totalFiles > 2000) {
+      observations.push(`📊 Large codebase: ${result.metrics.totalFiles} files, ${result.metrics.totalLines.toLocaleString()} lines`);
+    }
+  }
+  if (result.apiEndpoints && result.apiEndpoints.length > 100) {
+    observations.push(`🌐 Large API surface: ${result.apiEndpoints.length} routes`);
+  }
+  if (result.databaseSchema && result.databaseSchema.length > 50) {
+    observations.push(`🗄️ Complex schema: ${result.databaseSchema.length} tables`);
+  }
+  if (observations.length) {
+    observations.forEach(o => {
+      md += `- ${o}\n`;
+    });
+  }
+  if (!result.architecturePatterns?.patterns?.length && !observations.length) {
+    md += `*(no observations — use --deep flag for deeper analysis)*\n`;
+  }
+  md += `\n`;
+
+  md += `---\n\n*Generated by Codebase Scanner v2.0.0*\n`;
+
+  return md;
 }
 
 main();
