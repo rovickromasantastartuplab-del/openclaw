@@ -19,7 +19,7 @@ const IGNORED_FILES = new Set([
   '.env.production', '.env.development',
 ]);
 
-const MAX_FILE_SIZE_BYTES = 1024 * 1024; // skip files > 1MB
+const MAX_FILE_SIZE_BYTES = 1024 * 1024;
 
 const EXT_TO_LANG = {
   '.js': 'JavaScript', '.mjs': 'JavaScript', '.cjs': 'JavaScript',
@@ -62,12 +62,8 @@ const FRAMEWORK_DETECTION = {
     { file: 'wsgi.py', name: 'Django/WSGI' },
     { file: 'asgi.py', name: 'Django/ASGI' },
   ],
-  'Go': [
-    { file: 'go.mod', name: 'Go Modules' },
-  ],
-  'Rust': [
-    { file: 'Cargo.toml', name: 'Cargo' },
-  ],
+  'Go': [{ file: 'go.mod', name: 'Go Modules' }],
+  'Rust': [{ file: 'Cargo.toml', name: 'Cargo' }],
 };
 
 const DB_DETECTION = [
@@ -159,27 +155,27 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const opts = {
     target: process.cwd(),
-    mode: 'quick', // quick | full
+    mode: 'quick',
     flags: new Set(),
     json: false,
     depth: 4,
     exclude: [],
+    deep: false,
   };
 
   for (const arg of args) {
     if (arg === '--full') { opts.mode = 'full'; opts.depth = 6; }
     else if (arg === '--json') opts.json = true;
+    else if (arg === '--deep') { opts.deep = true; opts.mode = 'full'; opts.depth = 6; }
     else if (arg === '--structure') opts.flags.add('structure');
     else if (arg === '--stack') opts.flags.add('stack');
     else if (arg === '--dependencies') opts.flags.add('dependencies');
     else if (arg === '--metrics') opts.flags.add('metrics');
     else if (arg === '--entrypoints') opts.flags.add('entrypoints');
     else if (arg === '--markdown') opts.flags.add('markdown');
-    else if (arg === '--depth') {} // handled below
     else if (arg.startsWith('--depth=')) opts.depth = parseInt(arg.split('=')[1], 10) || opts.depth;
     else if (arg.startsWith('--exclude=')) opts.exclude = arg.split('=')[1].split(',');
     else if (arg.startsWith('-') && !arg.startsWith('--')) {
-      // short flags: -s -m -d etc
       for (const ch of arg.slice(1)) {
         if (ch === 's') opts.flags.add('structure');
         if (ch === 't') opts.flags.add('stack');
@@ -193,7 +189,6 @@ function parseArgs() {
     else if (!arg.startsWith('-')) opts.target = path.resolve(arg);
   }
 
-  // if no specific flags, show everything
   if (opts.flags.size === 0) {
     ['structure', 'stack', 'dependencies', 'metrics', 'entrypoints'].forEach(f => opts.flags.add(f));
   }
@@ -238,40 +233,25 @@ function walkDir(dir, maxDepth, extraExcludes, depth = 0, relPrefix = '') {
     } else {
       let size = 0;
       try { size = fs.statSync(fullPath).size; } catch {}
-      entries.push({ type: 'file', name: item.name, relPath, depth, isLast, size });
+      entries.push({ type: 'file', name: item.name, relPath, fullPath, depth, isLast, size });
     }
   }
   return entries;
 }
 
 function buildTree(entries) {
-  // Group entries by depth to track sibling order
   let tree = '.\n';
-
   for (const e of entries) {
-    // Build the visual prefix by looking at ancestors' isLast status
-    // We need to find the ancestor at each depth level
     let prefix = '';
-
-    // For each depth level from 0 to e.depth-1, find the ancestor and check isLast
     for (let d = 0; d < e.depth; d++) {
-      // Find the ancestor at depth d that is an ancestor of this entry
-      // Walk backwards through entries to find the closest ancestor at depth d
       let ancestor = null;
       const idx = entries.indexOf(e);
       for (let j = idx - 1; j >= 0; j--) {
-        if (entries[j].depth === d) {
-          ancestor = entries[j];
-          break;
-        }
-        if (entries[j].depth < d) {
-          ancestor = entries[j];
-          break;
-        }
+        if (entries[j].depth === d) { ancestor = entries[j]; break; }
+        if (entries[j].depth < d) { ancestor = entries[j]; break; }
       }
       prefix += ancestor && ancestor.isLast ? '    ' : '│   ';
     }
-
     const connector = e.isLast ? '└── ' : '├── ';
     tree += `${prefix}${connector}${e.name}\n`;
   }
@@ -303,40 +283,91 @@ function readFileSafe(filePath, maxLen = 5000) {
   } catch { return null; }
 }
 
-// ─── Analysis ────────────────────────────────────────────────────────────────
+function findFiles(root, dir, pattern) {
+  const results = [];
+  const fullDir = path.join(root, dir);
+  if (!fs.existsSync(fullDir)) return results;
+
+  let items;
+  try { items = fs.readdirSync(fullDir, { withFileTypes: true }); }
+  catch { return results; }
+
+  for (const item of items) {
+    if (item.isFile() && item.name.match(pattern)) {
+      results.push(path.join(fullDir, item.name));
+    }
+  }
+  return results;
+}
+
+function scanDir(root, dir) {
+  const fullDir = path.join(root, dir);
+  if (!fs.existsSync(fullDir)) return [];
+  try {
+    return fs.readdirSync(fullDir, { withFileTypes: true })
+      .filter(e => e.isFile())
+      .map(e => path.join(fullDir, e.name));
+  } catch { return []; }
+}
+
+function scanDirRecursive(root, dir, maxDepth = 5) {
+  const results = [];
+  const fullDir = path.join(root, dir);
+  if (!fs.existsSync(fullDir)) return results;
+
+  function walk(current, depth) {
+    if (depth > maxDepth) return;
+    let items;
+    try { items = fs.readdirSync(current, { withFileTypes: true }); }
+    catch { return; }
+    for (const item of items) {
+      const fp = path.join(current, item.name);
+      if (item.isFile()) results.push(fp);
+      else if (item.isDirectory() && !IGNORED_DIRS.has(item.name)) walk(fp, depth + 1);
+    }
+  }
+  walk(fullDir, 0);
+  return results;
+}
+
+// ─── Basic Analysis ──────────────────────────────────────────────────────────
 
 function analyzeProject(root, entries, opts) {
   const result = {};
   const allFiles = entries.filter(e => e.type === 'file');
 
-  // Project overview
   if (opts.flags.has('stack') || opts.flags.size === 5) {
     result.overview = detectOverview(root);
   }
-
-  // Tech stack
   if (opts.flags.has('stack')) {
     result.stack = detectStack(root, allFiles);
   }
-
-  // Entry points
   if (opts.flags.has('entrypoints')) {
     result.entryPoints = detectEntryPoints(root, allFiles);
   }
-
-  // Code metrics
   if (opts.flags.has('metrics')) {
     result.metrics = detectMetrics(root, allFiles);
   }
-
-  // Dependencies
   if (opts.flags.has('dependencies')) {
     result.dependencies = detectDependencies(root);
   }
-
-  // Structure
   if (opts.flags.has('structure')) {
     result.structure = buildTree(entries);
+  }
+
+  // Deep analysis
+  if (opts.deep) {
+    result.deep = {};
+    result.deep.apiEndpoints = deepApiEndpoints(root);
+    result.deep.databaseSchema = deepDatabaseSchema(root);
+    result.deep.envVars = deepEnvVars(root);
+    result.deep.architecture = deepArchitecture(root, entries);
+    result.deep.auth = deepAuth(root);
+    result.deep.keyFiles = deepKeyFiles(root);
+    result.deep.eventSystem = deepEventSystem(root);
+    result.deep.config = deepConfig(root);
+    result.deep.serviceLayer = deepServiceLayer(root);
+    result.deep.moduleBoundaries = deepModuleBoundaries(root, entries);
   }
 
   return result;
@@ -347,10 +378,16 @@ function detectOverview(root) {
   const pyCfg = fs.existsSync(path.join(root, 'pyproject.toml'));
   const cargo = readJsonSafe(path.join(root, 'Cargo.toml'));
   const goMod = readFileSafe(path.join(root, 'go.mod'));
+  const composer = readJsonSafe(path.join(root, 'composer.json'));
 
   const overview = { name: path.basename(root), description: '', type: 'unknown' };
 
-  if (pkg) {
+  if (composer) {
+    overview.name = Object.keys(composer.name || {})[0] || overview.name;
+    if (typeof composer.name === 'string') overview.name = composer.name;
+    overview.description = composer.description || '';
+    overview.type = 'Laravel/PHP';
+  } else if (pkg) {
     overview.name = pkg.name || overview.name;
     overview.description = pkg.description || '';
     overview.version = pkg.version || '';
@@ -371,7 +408,6 @@ function detectOverview(root) {
     overview.type = 'Python Project';
   }
 
-  // infer type from file presence
   const allFileNames = fs.readdirSync(root);
   if (allFileNames.includes('Dockerfile')) overview.type += ' (Containerized)';
 
@@ -380,28 +416,18 @@ function detectOverview(root) {
 
 function detectStack(root, allFiles) {
   const stack = {
-    languages: new Set(),
-    frameworks: new Set(),
-    databases: new Set(),
-    devops: new Set(),
-    tools: new Set(),
-    runtimes: new Set(),
-    packageManagers: new Set(),
+    languages: new Set(), frameworks: new Set(), databases: new Set(),
+    devops: new Set(), tools: new Set(), runtimes: new Set(), packageManagers: new Set(),
   };
 
-  // Languages from file extensions
   for (const f of allFiles) {
     const ext = path.extname(f.name).toLowerCase();
-    if (EXT_TO_LANG[ext]) {
-      stack.languages.add(EXT_TO_LANG[ext]);
-    }
+    if (EXT_TO_LANG[ext]) stack.languages.add(EXT_TO_LANG[ext]);
   }
 
-  // Check for special files
   if (allFiles.some(f => f.name === 'Dockerfile')) stack.languages.add('Docker');
   if (allFiles.some(f => f.name.match(/Makefile/))) stack.tools.add('Make');
 
-  // Package managers
   if (fs.existsSync(path.join(root, 'package-lock.json'))) stack.packageManagers.add('npm');
   if (fs.existsSync(path.join(root, 'yarn.lock'))) stack.packageManagers.add('Yarn');
   if (fs.existsSync(path.join(root, 'pnpm-lock.yaml'))) stack.packageManagers.add('pnpm');
@@ -411,23 +437,32 @@ function detectStack(root, allFiles) {
   if (fs.existsSync(path.join(root, 'requirements.txt'))) stack.packageManagers.add('pip');
   if (fs.existsSync(path.join(root, 'Cargo.lock'))) stack.packageManagers.add('Cargo');
   if (fs.existsSync(path.join(root, 'go.sum'))) stack.packageManagers.add('Go Modules');
+  if (fs.existsSync(path.join(root, 'composer.lock'))) stack.packageManagers.add('Composer');
 
-  // Frameworks from config files
   for (const [category, checks] of Object.entries(FRAMEWORK_DETECTION)) {
     for (const check of checks) {
       if (fs.existsSync(path.join(root, check.file))) {
         stack.frameworks.add(check.name);
         if (check.content) {
           const content = readFileSafe(path.join(root, check.file));
-          if (content && content.toLowerCase().includes(check.content)) {
-            stack.frameworks.add(check.name);
-          }
+          if (content && content.toLowerCase().includes(check.content)) stack.frameworks.add(check.name);
         }
       }
     }
   }
 
-  // Read all dependency sources
+  // Laravel detection
+  if (fs.existsSync(path.join(root, 'artisan'))) stack.frameworks.add('Laravel');
+  if (fs.existsSync(path.join(root, 'composer.json'))) {
+    const comp = readJsonSafe(path.join(root, 'composer.json'));
+    if (comp) {
+      const allDeps = { ...comp.require, ...comp['require-dev'] };
+      if (allDeps['laravel/framework']) stack.frameworks.add('Laravel');
+      if (allDeps['inertiajs/inertia-laravel']) stack.frameworks.add('Inertia.js');
+      if (allDeps['livewire/livewire']) stack.frameworks.add('Livewire');
+    }
+  }
+
   const allDeps = new Set();
   const pkg = readJsonSafe(path.join(root, 'package.json'));
   if (pkg) {
@@ -437,44 +472,40 @@ function detectStack(root, allFiles) {
   const pyReqs = readFileSafe(path.join(root, 'requirements.txt'));
   if (pyReqs) pyReqs.split('\n').forEach(l => allDeps.add(l.split(/[=<>!]/)[0].trim()));
 
-  // DB detection
   for (const db of DB_DETECTION) {
     if (db.patterns.some(p => allDeps.has(p) || [...allDeps].some(d => d.includes(p)))) {
       stack.databases.add(db.name);
     }
   }
 
-  // DevOps detection
-  for (const check of DEVOPS_DETECTION) {
-    if (check.file && fs.existsSync(path.join(root, check.file))) {
-      stack.devops.add(check.name);
-    }
-    if (check.dir && fs.existsSync(path.join(root, check.dir))) {
-      stack.devops.add(check.name);
-    }
+  // Check Laravel DB config
+  const dbConfig = readFileSafe(path.join(root, 'config/database.php'));
+  if (dbConfig) {
+    if (dbConfig.includes("'mysql'")) stack.databases.add('MySQL');
+    if (dbConfig.includes("'pgsql'")) stack.databases.add('PostgreSQL');
+    if (dbConfig.includes("'sqlite'")) stack.databases.add('SQLite');
   }
 
-  // Tool detection
+  for (const check of DEVOPS_DETECTION) {
+    if (check.file && fs.existsSync(path.join(root, check.file))) stack.devops.add(check.name);
+    if (check.dir && fs.existsSync(path.join(root, check.dir))) stack.devops.add(check.name);
+  }
+
   for (const tool of TOOL_DETECTION) {
     if (tool.patterns.some(p => allDeps.has(p) || [...allDeps].some(d => d.includes(p)))) {
       stack.tools.add(tool.name);
     }
   }
 
-  // Runtimes
   for (const lang of stack.languages) {
     if (LANG_RUNTIMES[lang]) stack.runtimes.add(LANG_RUNTIMES[lang]);
   }
 
-  // Convert sets to sorted arrays
   const toArr = s => [...s].sort();
   return {
-    languages: toArr(stack.languages),
-    frameworks: toArr(stack.frameworks),
-    databases: toArr(stack.databases),
-    devops: toArr(stack.devops),
-    tools: toArr(stack.tools),
-    runtimes: toArr(stack.runtimes),
+    languages: toArr(stack.languages), frameworks: toArr(stack.frameworks),
+    databases: toArr(stack.databases), devops: toArr(stack.devops),
+    tools: toArr(stack.tools), runtimes: toArr(stack.runtimes),
     packageManagers: toArr(stack.packageManagers),
   };
 }
@@ -482,7 +513,6 @@ function detectStack(root, allFiles) {
 function detectEntryPoints(root, allFiles) {
   const entryPoints = [];
 
-  // package.json scripts & bin
   const pkg = readJsonSafe(path.join(root, 'package.json'));
   if (pkg) {
     if (pkg.main) entryPoints.push({ type: 'main', file: pkg.main });
@@ -497,7 +527,12 @@ function detectEntryPoints(root, allFiles) {
     }
   }
 
-  // Common entry files
+  // Laravel
+  if (fs.existsSync(path.join(root, 'artisan'))) entryPoints.push({ type: 'entry file', file: 'artisan' });
+  if (fs.existsSync(path.join(root, 'public/index.php'))) entryPoints.push({ type: 'entry file', file: 'public/index.php' });
+  if (fs.existsSync(path.join(root, 'routes/web.php'))) entryPoints.push({ type: 'entry file', file: 'routes/web.php' });
+  if (fs.existsSync(path.join(root, 'routes/api.php'))) entryPoints.push({ type: 'entry file', file: 'routes/api.php' });
+
   const entryPatterns = [
     'index.js', 'index.ts', 'index.mjs', 'index.cjs',
     'src/index.js', 'src/index.ts', 'src/main.js', 'src/main.ts',
@@ -508,12 +543,9 @@ function detectEntryPoints(root, allFiles) {
   ];
 
   for (const pattern of entryPatterns) {
-    if (fs.existsSync(path.join(root, pattern))) {
-      entryPoints.push({ type: 'entry file', file: pattern });
-    }
+    if (fs.existsSync(path.join(root, pattern))) entryPoints.push({ type: 'entry file', file: pattern });
   }
 
-  // Next.js pages/app dir
   if (fs.existsSync(path.join(root, 'app'))) entryPoints.push({ type: 'framework', name: 'Next.js App Router', dir: 'app/' });
   if (fs.existsSync(path.join(root, 'pages'))) entryPoints.push({ type: 'framework', name: 'Pages Router', dir: 'pages/' });
   if (fs.existsSync(path.join(root, 'src/app'))) entryPoints.push({ type: 'framework', name: 'Next.js App Router', dir: 'src/app/' });
@@ -550,7 +582,6 @@ function detectMetrics(root, allFiles) {
 
   fileSizes.sort((a, b) => b.lines - a.lines);
 
-  // Test files
   const testFiles = allFiles
     .filter(f => f.name.match(/\.(test|spec)\./) || f.relPath.match(/__tests__|tests?\/|spec\//))
     .map(f => f.relPath);
@@ -571,7 +602,6 @@ function detectMetrics(root, allFiles) {
 function detectDependencies(root) {
   const deps = {};
 
-  // Node.js
   const pkg = readJsonSafe(path.join(root, 'package.json'));
   if (pkg) {
     deps.node = {
@@ -579,13 +609,22 @@ function detectDependencies(root) {
       dev: Object.keys(pkg.devDependencies || {}).length,
       total: Object.keys(pkg.dependencies || {}).length + Object.keys(pkg.devDependencies || {}).length,
       productionList: Object.keys(pkg.dependencies || {}).sort(),
-      ...(process.env.NODE_ENV === 'full' || true ? {
-        devList: Object.keys(pkg.devDependencies || {}).sort()
-      } : {}),
+      devList: Object.keys(pkg.devDependencies || {}).sort(),
     };
   }
 
-  // Python
+  // PHP/Composer
+  const composer = readJsonSafe(path.join(root, 'composer.json'));
+  if (composer) {
+    deps.php = {
+      production: Object.keys(composer.require || {}).length,
+      dev: Object.keys(composer['require-dev'] || {}).length,
+      total: Object.keys(composer.require || {}).length + Object.keys(composer['require-dev'] || {}).length,
+      productionList: Object.keys(composer.require || {}).sort(),
+      devList: Object.keys(composer['require-dev'] || {}).sort(),
+    };
+  }
+
   const reqs = readFileSafe(path.join(root, 'requirements.txt'));
   if (reqs) {
     const lines = reqs.split('\n').filter(l => l.trim() && !l.startsWith('#'));
@@ -593,11 +632,8 @@ function detectDependencies(root) {
   }
 
   const pyproject = readFileSafe(path.join(root, 'pyproject.toml'));
-  if (pyproject && !deps.python) {
-    deps.python = { configFile: 'pyproject.toml' };
-  }
+  if (pyproject && !deps.python) deps.python = { configFile: 'pyproject.toml' };
 
-  // Go
   const goMod = readFileSafe(path.join(root, 'go.mod'));
   if (goMod) {
     const requires = goMod.split('require (')[1];
@@ -607,7 +643,6 @@ function detectDependencies(root) {
     }
   }
 
-  // Rust
   const cargo = readJsonSafe(path.join(root, 'Cargo.toml'));
   if (cargo) {
     deps.rust = {
@@ -619,11 +654,1246 @@ function detectDependencies(root) {
   return deps;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── DEEP ANALYSIS MODULES ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── 1. API Endpoint Map ─────────────────────────────────────────────────────
+
+function deepApiEndpoints(root) {
+  const endpoints = [];
+
+  // Laravel routes
+  const routeFiles = ['web.php', 'api.php', 'console.php', 'channels.php', 'settings.php', 'auth.php'];
+  for (const rf of routeFiles) {
+    const fp = path.join(root, 'routes', rf);
+    if (!fs.existsSync(fp)) continue;
+    const content = readFileSafe(fp, 100000);
+    if (!content) continue;
+
+    const prefix = rf.replace('.php', '');
+    const parsed = parseLaravelRoutes(content, prefix, fp);
+    endpoints.push(...parsed);
+  }
+
+  // Check help/ subdirectory routes
+  const helpRoutes = path.join(root, 'help', 'routes');
+  if (fs.existsSync(helpRoutes)) {
+    for (const rf of routeFiles) {
+      const fp = path.join(helpRoutes, rf);
+      if (!fs.existsSync(fp)) continue;
+      const content = readFileSafe(fp, 100000);
+      if (!content) continue;
+      const prefix = 'help/' + rf.replace('.php', '');
+      endpoints.push(...parseLaravelRoutes(content, prefix, fp));
+    }
+  }
+
+  // Express/Fastify routes
+  const jsRouteFiles = [];
+  const routeDirs = ['routes', 'src/routes', 'api', 'src/api'];
+  for (const d of routeDirs) {
+    jsRouteFiles.push(...scanDir(root, d));
+  }
+  for (const fp of jsRouteFiles) {
+    const content = readFileSafe(fp, 100000);
+    if (!content) continue;
+    endpoints.push(...parseExpressRoutes(content, fp));
+  }
+
+  // Next.js API routes
+  const nextApiDirs = ['app/api', 'pages/api', 'src/app/api', 'src/pages/api'];
+  for (const d of nextApiDirs) {
+    const files = scanDirRecursive(root, d);
+    for (const fp of files) {
+      const content = readFileSafe(fp, 50000);
+      if (!content) continue;
+      const relPath = fp.replace(root, '').replace(/\\/g, '/');
+      endpoints.push(...parseNextApiRoutes(content, relPath));
+    }
+  }
+
+  // Go HTTP handlers
+  const goFiles = scanDirRecursive(root, '', 3).filter(f => f.endsWith('.go'));
+  for (const fp of goFiles) {
+    const content = readFileSafe(fp, 100000);
+    if (!content) continue;
+    endpoints.push(...parseGoRoutes(content, fp.replace(root, '')));
+  }
+
+  // Controllers (for context)
+  const controllers = parseLaravelControllers(root);
+  return { endpoints, controllers };
+}
+
+function parseLaravelRoutes(content, source, filePath) {
+  const endpoints = [];
+  const lines = content.split('\n');
+  let currentMiddleware = [];
+  let currentPrefix = '';
+  let currentNamespace = '';
+  let groupDepth = 0;
+  const groupStack = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith('//') || line.startsWith('*') || line.startsWith('use ')) continue;
+
+    // Route::group or Route::prefix or Route::middleware
+    const groupMatch = line.match(/Route::(group|prefix|middleware)\s*\(\s*\[?/);
+    if (groupMatch) {
+      groupDepth++;
+      // Extract prefix
+      const prefixMatch = line.match(/'prefix'\s*=>\s*'([^']+)'/);
+      if (prefixMatch) currentPrefix = prefixMatch[1];
+
+      // Extract middleware
+      const mwMatch = line.match(/'middleware'\s*=>\s*\[([^\]]+)\]/);
+      if (mwMatch) {
+        const mws = mwMatch[1].match(/'([^']+)'/g);
+        if (mws) currentMiddleware = mws.map(m => m.replace(/'/g, ''));
+      }
+      groupStack.push({ prefix: currentPrefix, middleware: [...currentMiddleware] });
+    }
+
+    // Route::get, Route::post, etc.
+    const routeMatch = line.match(/Route::(get|post|put|patch|delete|options|any|match)\s*\(\s*'([^']+)'/i);
+    if (routeMatch) {
+      const method = routeMatch[1].toUpperCase();
+      let routePath = routeMatch[2];
+      if (currentPrefix) routePath = currentPrefix + '/' + routePath;
+      routePath = '/' + routePath.replace(/\/+/g, '/');
+
+      // Extract controller/action
+      const controllerMatch = line.match(/\[(\w+Controller)::class,\s*'(\w+)'\]/);
+      const actionMatch = line.match(/(\w+Controller)@(\w+)/);
+      const inlineAction = line.match(/function\s*\(/);
+
+      let controller = '', action = '';
+      if (controllerMatch) { controller = controllerMatch[1]; action = controllerMatch[2]; }
+      else if (actionMatch) { controller = actionMatch[1]; action = actionMatch[2]; }
+      else if (inlineAction) { action = 'closure'; }
+
+      // Extract inline middleware
+      let mw = [...currentMiddleware];
+      const inlineMw = line.match(/->middleware\(\s*['"]([^'"]+)['"]\s*\)/);
+      if (inlineMw) mw.push(inlineMw[1]);
+      const inlineMwArr = line.match(/->middleware\(\s*\[([^\]]+)\]\s*\)/);
+      if (inlineMwArr) {
+        const mws = inlineMwArr[1].match(/'([^']+)'/g);
+        if (mws) mw.push(...mws.map(m => m.replace(/'/g, '')));
+      }
+
+      // Extract name
+      const nameMatch = line.match(/->name\(\s*'([^']+)'\s*\)/);
+      const name = nameMatch ? nameMatch[1] : '';
+
+      endpoints.push({
+        method, path: routePath, controller, action, middleware: mw,
+        name, source: path.basename(filePath), line: i + 1,
+      });
+    }
+
+    // Route::resource / Route::apiResource
+    const resMatch = line.match(/Route::(resource|apiResource)\s*\(\s*'([^']+)',\s*(\w+Controller)/);
+    if (resMatch) {
+      const isApi = resMatch[1] === 'apiResource';
+      const basePath = resMatch[2];
+      const ctrl = resMatch[3];
+      const methods = isApi
+        ? ['GET', 'POST', 'PUT/PATCH', 'DELETE']
+        : ['GET', 'POST', 'GET', 'PUT/PATCH', 'DELETE', 'GET', 'GET'];
+      const actions = isApi
+        ? ['index', 'store', 'update', 'destroy']
+        : ['index', 'store', 'create', 'update', 'destroy', 'show', 'edit'];
+
+      for (let j = 0; j < methods.length; j++) {
+        endpoints.push({
+          method: methods[j],
+          path: '/' + basePath + (j > 1 ? '/{id}' : ''),
+          controller: ctrl, action: actions[j],
+          middleware: [...currentMiddleware], name: '',
+          source: path.basename(filePath), line: i + 1,
+        });
+      }
+    }
+
+    // Close group
+    if (line.includes('});') && groupDepth > 0) {
+      groupDepth--;
+      const prev = groupStack.pop();
+      if (prev) {
+        currentPrefix = groupStack.length > 0 ? groupStack[groupStack.length - 1].prefix : '';
+        currentMiddleware = groupStack.length > 0 ? groupStack[groupStack.length - 1].middleware : [];
+      }
+    }
+  }
+
+  return endpoints;
+}
+
+function parseExpressRoutes(content, filePath) {
+  const endpoints = [];
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const m = line.match(/(?:router|app|route)\.(get|post|put|patch|delete|all)\s*\(\s*['"`]([^'"`]+)['"`]/i);
+    if (m) {
+      endpoints.push({
+        method: m[1].toUpperCase(), path: m[2], controller: '', action: '',
+        middleware: [], name: '', source: path.basename(filePath), line: i + 1,
+      });
+    }
+  }
+  return endpoints;
+}
+
+function parseNextApiRoutes(content, relPath) {
+  const endpoints = [];
+  const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+  for (const method of methods) {
+    if (content.includes(`export ${method}`) || content.includes(`export async function ${method}`)) {
+      const routePath = relPath
+        .replace(/\/route\.(js|ts)$/, '')
+        .replace(/\/index\.(js|ts)$/, '')
+        .replace(/\/\[(\w+)\]/g, '/{$1}')
+        .replace(/^\/(app|pages)\/api/, '');
+      endpoints.push({ method, path: routePath || '/', controller: '', action: method.toLowerCase(),
+        middleware: [], name: '', source: relPath, line: 0 });
+    }
+  }
+  return endpoints;
+}
+
+function parseGoRoutes(content, filePath) {
+  const endpoints = [];
+  const patterns = [
+    /\.(HandleFunc|Handle|Get|Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"/g,
+    /\.(GET|POST|PUT|PATCH|DELETE|HandleFunc)\s*\(\s*"([^"]+)"/g,
+  ];
+  for (const pat of patterns) {
+    let m;
+    while ((m = pat.exec(content)) !== null) {
+      const methodMap = { 'HandleFunc': 'ANY', 'Handle': 'ANY', 'Get': 'GET', 'Post': 'POST', 'Put': 'PUT', 'Patch': 'PATCH', 'Delete': 'DELETE',
+        'GET': 'GET', 'POST': 'POST', 'PUT': 'PUT', 'PATCH': 'PATCH', 'DELETE': 'DELETE' };
+      endpoints.push({
+        method: methodMap[m[1]] || m[1].toUpperCase(), path: m[2], controller: '', action: '',
+        middleware: [], name: '', source: filePath, line: 0,
+      });
+    }
+  }
+  return endpoints;
+}
+
+function parseLaravelControllers(root) {
+  const controllers = [];
+  const ctrlDirs = [
+    path.join(root, 'app', 'Http', 'Controllers'),
+    path.join(root, 'help', 'app', 'Http', 'Controllers'),
+  ];
+
+  for (const ctrlDir of ctrlDirs) {
+    if (!fs.existsSync(ctrlDir)) continue;
+    const files = scanDirRecursive(ctrlDir, '', 3);
+    for (const fp of files) {
+      if (!fp.endsWith('.php')) continue;
+      const content = readFileSafe(fp, 50000);
+      if (!content) continue;
+
+      const classMatch = content.match(/class\s+(\w+)\s+extends\s+\w+/);
+      if (!classMatch) continue;
+      const className = classMatch[1];
+
+      // Find public methods
+      const methods = [];
+      const methodRegex = /public\s+function\s+(\w+)\s*\(([^)]*)\)/g;
+      let mm;
+      while ((mm = methodRegex.exec(content)) !== null) {
+        methods.push({ name: mm[1], params: mm[2].trim() });
+      }
+
+      const relPath = fp.replace(root + '/', '');
+      controllers.push({ class: className, file: relPath, methods });
+    }
+  }
+  return controllers;
+}
+
+// ─── 2. Database Schema ──────────────────────────────────────────────────────
+
+function deepDatabaseSchema(root) {
+  const tables = [];
+
+  // Laravel migrations
+  const migrationDirs = [
+    path.join(root, 'database', 'migrations'),
+    path.join(root, 'help', 'database', 'migrations'),
+  ];
+
+  for (const mDir of migrationDirs) {
+    if (!fs.existsSync(mDir)) continue;
+    const prefix = mDir.includes('/help/') ? 'help/' : '';
+    const files = fs.readdirSync(mDir).filter(f => f.endsWith('.php')).map(f => path.join(mDir, f));
+    for (const fp of files) {
+      const content = readFileSafe(fp, 100000);
+      if (!content) continue;
+      tables.push(...parseLaravelMigration(content, fp, prefix));
+    }
+  }
+
+  // Eloquent models
+  const models = parseLaravelModels(root);
+
+  return { tables, models };
+}
+
+function parseLaravelMigration(content, filePath, prefix) {
+  const tables = [];
+
+  // Schema::create
+  const createMatch = content.match(/Schema::create\s*\(\s*'([^']+)'/);
+  if (createMatch) {
+    const tableName = prefix + createMatch[1];
+    const columns = extractLaravelColumns(content);
+    const indexes = extractLaravelIndexes(content);
+    const foreignKeys = extractLaravelForeignKeys(content);
+    tables.push({ name: tableName, type: 'create', columns, indexes, foreignKeys, file: path.basename(filePath) });
+  }
+
+  // Schema::table (alterations)
+  const alterMatches = content.matchAll(/Schema::table\s*\(\s*'([^']+)'/g);
+  for (const m of alterMatches) {
+    const tableName = prefix + m[1];
+    const columns = extractLaravelColumns(content);
+    tables.push({ name: tableName, type: 'alter', columns, indexes: [], foreignKeys: [], file: path.basename(filePath) });
+  }
+
+  // Schema::dropIfExists
+  const dropMatches = content.matchAll(/Schema::dropIfExists\s*\(\s*'([^']+)'/g);
+  for (const m of dropMatches) {
+    tables.push({ name: prefix + m[1], type: 'drop', columns: [], indexes: [], foreignKeys: [], file: path.basename(filePath) });
+  }
+
+  return tables;
+}
+
+function extractLaravelColumns(content) {
+  const columns = [];
+  // Match lines inside the Schema closure
+  const closureMatch = content.match(/function\s*\([^)]*\)\s*\{([\s\S]*)\}\s*\);/);
+  if (!closureMatch) return columns;
+
+  const body = closureMatch[1];
+  const lines = body.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('$table->')) continue;
+
+    // Extract column definition
+    const colMatch = trimmed.match(/\$table->(\w+)\s*\(\s*(?:'([^']*)'|)/);
+    if (!colMatch) continue;
+
+    const type = colMatch[1];
+    const name = colMatch[2] || '';
+
+    // Skip special table methods
+    if (['timestamps', 'softDeletes', 'rememberToken', 'nullableTimestamps', 'morphs', 'nullableMorphs', 'uuidMorphs'].includes(type) && !name) {
+      // Handle as column with derived name
+      const derivedNames = {
+        'timestamps': ['created_at', 'updated_at'],
+        'softDeletes': ['deleted_at'],
+        'rememberToken': ['remember_token'],
+      };
+      const dnames = derivedNames[type] || [type];
+      for (const dn of dnames) {
+        columns.push({ name: dn, type, nullable: type === 'softDeletes', default: null });
+      }
+      continue;
+    }
+
+    if (!name && !['id', 'timestamps', 'softDeletes'].includes(type)) continue;
+
+    const nullable = trimmed.includes('->nullable()');
+    const defaultMatch = trimmed.match(/->default\s*\(\s*([^)]+)\s*\)/);
+    const defaultVal = defaultMatch ? defaultMatch[1].replace(/['"]/g, '') : null;
+    const unsigned = trimmed.includes('->unsigned()');
+
+    columns.push({ name: name || type, type, nullable, default: defaultVal, unsigned });
+  }
+
+  return columns;
+}
+
+function extractLaravelIndexes(content) {
+  const indexes = [];
+  const indexRegex = /\$table->(index|unique|primary|spatialIndex|fulltext)\s*\(\s*(?:\[([^\]]+)\]|'([^']+)')/g;
+  let m;
+  while ((m = indexRegex.exec(content)) !== null) {
+    const type = m[1];
+    const cols = (m[2] || m[3]).split(',').map(c => c.trim().replace(/['"]/g, ''));
+    indexes.push({ type, columns: cols });
+  }
+
+  // Also catch ->unique() chained on column definitions
+  const uniqueRegex = /\$table->\w+\s*\(\s*'(\w+)'.*?->unique\(\)/g;
+  while ((m = uniqueRegex.exec(content)) !== null) {
+    indexes.push({ type: 'unique', columns: [m[1]] });
+  }
+
+  return indexes;
+}
+
+function extractLaravelForeignKeys(content) {
+  const fks = [];
+  // $table->foreignId('x')->constrained('y')
+  const fkRegex = /\$table->foreignId\s*\(\s*'(\w+)'\s*\)->constrained\s*\(\s*(?:'([^']+)')?/g;
+  let m;
+  while ((m = fkRegex.exec(content)) !== null) {
+    fks.push({ column: m[1], references: 'id', onTable: m[2] || m[1].replace(/_id$/, '') + 's', onDelete: '' });
+  }
+
+  // $table->foreign('x')->references('y')->on('z')
+  const fkRegex2 = /\$table->foreign\s*\(\s*'(\w+)'\s*\)->references\s*\(\s*'(\w+)'\s*\)->on\s*\(\s*'([^']+)'\s*\)(?:->onDelete\s*\(\s*'([^']+)'\s*\))?/g;
+  while ((m = fkRegex2.exec(content)) !== null) {
+    fks.push({ column: m[1], references: m[2], onTable: m[3], onDelete: m[4] || '' });
+  }
+
+  return fks;
+}
+
+function parseLaravelModels(root) {
+  const models = [];
+  const modelDirs = [
+    path.join(root, 'app', 'Models'),
+    path.join(root, 'help', 'app', 'Models'),
+  ];
+
+  for (const mDir of modelDirs) {
+    if (!fs.existsSync(mDir)) continue;
+    const prefix = mDir.includes('/help/') ? 'help/' : '';
+    const files = fs.readdirSync(mDir).filter(f => f.endsWith('.php')).map(f => path.join(mDir, f));
+    for (const fp of files) {
+      const content = readFileSafe(fp, 50000);
+      if (!content) continue;
+
+      const classMatch = content.match(/class\s+(\w+)\s+extends\s+(\w+)/);
+      if (!classMatch) continue;
+
+      const name = classMatch[1];
+      const parent = classMatch[2];
+
+      // fillable
+      const fillableMatch = content.match(/protected\s+\$fillable\s*=\s*\[([^\]]*)\]/s);
+      const fillable = fillableMatch
+        ? fillableMatch[1].match(/'([^']+)'/g)?.map(s => s.replace(/'/g, '')) || []
+        : [];
+
+      // guarded
+      const guardedMatch = content.match(/protected\s+\$guarded\s*=\s*\[([^\]]*)\]/s);
+      const guarded = guardedMatch
+        ? guardedMatch[1].match(/'([^']+)'/g)?.map(s => s.replace(/'/g, '')) || []
+        : [];
+
+      // casts
+      const castsMatch = content.match(/protected\s+\$casts\s*=\s*\[([^\]]*)\]/s);
+      const casts = {};
+      if (castsMatch) {
+        const castEntries = castsMatch[1].matchAll(/'(\w+)'\s*=>\s*'([^']+)'/g);
+        for (const ce of castEntries) casts[ce[1]] = ce[2];
+      }
+
+      // table
+      const tableMatch = content.match(/protected\s+\$table\s*=\s*'([^']+)'/);
+      const table = tableMatch ? tableMatch[1] : '';
+
+      // relationships
+      const relationships = [];
+      const relRegex = /public\s+function\s+(\w+)\s*\(\s*\)\s*\{[\s]*return\s+\$this->(hasMany|belongsTo|hasOne|belongsToMany|morphTo|morphMany|morphOne|morphToMany)\s*\(\s*(?:([\w\\]+)::class)?(?:\s*,\s*'([^']+)')?/g;
+      let rm;
+      while ((rm = relRegex.exec(content)) !== null) {
+        relationships.push({
+          name: rm[1], type: rm[2], relatedModel: (rm[3] || '').split('\\').pop(),
+          foreignKey: rm[4] || '',
+        });
+      }
+
+      models.push({ name, parent, table, fillable, guarded, casts, relationships, file: prefix + 'app/Models/' + path.basename(fp) });
+    }
+  }
+
+  return models;
+}
+
+// ─── 3. Environment Variables ────────────────────────────────────────────────
+
+function deepEnvVars(root) {
+  const envVars = new Map();
+
+  // Parse .env.example
+  const envFiles = ['.env.example', '.env.sample', '.env.template', '.env.stub'];
+  for (const ef of envFiles) {
+    const fp = path.join(root, ef);
+    if (!fs.existsSync(fp)) continue;
+    const content = readFileSafe(fp, 50000);
+    if (!content) continue;
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const m = trimmed.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/);
+      if (m) {
+        const name = m[1];
+        const example = m[2].replace(/^["']|["']$/g, '');
+        if (!envVars.has(name)) envVars.set(name, { name, example: '', source: '', usage: [] });
+        const ev = envVars.get(name);
+        ev.example = example;
+        ev.source = ef;
+      }
+    }
+  }
+
+  // Scan PHP files for env() calls
+  const phpFiles = scanDirRecursive(root, 'app', 4)
+    .concat(scanDirRecursive(root, 'config', 2))
+    .concat(scanDirRecursive(root, 'routes', 2))
+    .concat(scanDirRecursive(root, 'help', 5))
+    .filter(f => f.endsWith('.php'));
+
+  for (const fp of phpFiles) {
+    const content = readFileSafe(fp, 50000);
+    if (!content) continue;
+    const relPath = fp.replace(root + '/', '');
+
+    // env('KEY') or env("KEY")
+    const envRegex = /env\s*\(\s*['"]([A-Z_][A-Z0-9_]*)['"]/g;
+    let m;
+    while ((m = envRegex.exec(content)) !== null) {
+      const name = m[1];
+      if (!envVars.has(name)) envVars.set(name, { name, example: '', source: '', usage: [] });
+      const ev = envVars.get(name);
+      if (!ev.usage.includes(relPath)) ev.usage.push(relPath);
+    }
+
+    // config('file.key') references
+    const configRegex = /config\s*\(\s*['"]([\w.]+)['"]/g;
+    while ((m = configRegex.exec(content)) !== null) {
+      // Store config references as pseudo-env if they use env() in config
+    }
+  }
+
+  // Scan config files for env() calls with defaults
+  const configFiles = scanDir(root, 'config')
+    .concat(scanDir(path.join(root, 'help'), 'config').map(f => f));
+  const configDir = path.join(root, 'config');
+  const configDirFiles = fs.existsSync(configDir)
+    ? fs.readdirSync(configDir).filter(f => f.endsWith('.php')).map(f => path.join(configDir, f))
+    : [];
+
+  for (const fp of configDirFiles) {
+    const content = readFileSafe(fp, 50000);
+    if (!content) continue;
+    const relPath = fp.replace(root + '/', '');
+    const envRegex = /env\s*\(\s*['"]([A-Z_][A-Z0-9_]*)['"](?:\s*,\s*([^)]+))?\)/g;
+    let m;
+    while ((m = envRegex.exec(content)) !== null) {
+      const name = m[1];
+      const defaultVal = m[2] ? m[2].trim().replace(/^["']|["']$/g, '') : '';
+      if (!envVars.has(name)) envVars.set(name, { name, example: defaultVal, source: '', usage: [] });
+      const ev = envVars.get(name);
+      if (!ev.usage.includes(relPath)) ev.usage.push(relPath);
+      if (!ev.example && defaultVal) ev.example = defaultVal;
+    }
+  }
+
+  // Also scan JS/TS for process.env
+  const jsFiles = scanDirRecursive(root, 'src', 3)
+    .concat(scanDirRecursive(root, '', 2))
+    .filter(f => /\.(js|ts|jsx|tsx|mjs|cjs)$/.test(f));
+
+  for (const fp of jsFiles) {
+    const content = readFileSafe(fp, 50000);
+    if (!content) continue;
+    const relPath = fp.replace(root + '/', '');
+    const envRegex = /process\.env\.([A-Z_][A-Z0-9_]*)/g;
+    let m;
+    while ((m = envRegex.exec(content)) !== null) {
+      const name = m[1];
+      if (!envVars.has(name)) envVars.set(name, { name, example: '', source: '', usage: [] });
+      const ev = envVars.get(name);
+      if (!ev.usage.includes(relPath)) ev.usage.push(relPath);
+    }
+  }
+
+  return [...envVars.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ─── 4. Architecture Patterns ───────────────────────────────────────────────
+
+function deepArchitecture(root, entries) {
+  const patterns = [];
+  const dirNames = entries.filter(e => e.type === 'dir').map(e => e.name);
+  const dirPaths = new Set(dirNames);
+
+  // Laravel/MVC detection
+  const hasControllers = dirPaths.has('Controllers') || fs.existsSync(path.join(root, 'app', 'Http', 'Controllers'));
+  const hasModels = dirPaths.has('Models') || fs.existsSync(path.join(root, 'app', 'Models'));
+  const hasViews = dirPaths.has('views') || fs.existsSync(path.join(root, 'resources', 'views'));
+
+  if (hasControllers && hasModels) {
+    patterns.push({
+      pattern: 'MVC (Model-View-Controller)',
+      confidence: 'high',
+      evidence: ['app/Http/Controllers/', 'app/Models/', hasViews ? 'resources/views/' : 'Inertia.js (SPA)'],
+    });
+  }
+
+  // Service Layer
+  const hasServices = fs.existsSync(path.join(root, 'app', 'Services'));
+  if (hasServices) {
+    const serviceFiles = fs.readdirSync(path.join(root, 'app', 'Services')).filter(f => f.endsWith('.php'));
+    patterns.push({
+      pattern: 'Service Layer',
+      confidence: 'high',
+      evidence: [`app/Services/ (${serviceFiles.length} services)`],
+    });
+  }
+
+  // Event-Driven
+  const hasEvents = fs.existsSync(path.join(root, 'app', 'Events'));
+  const hasListeners = fs.existsSync(path.join(root, 'app', 'Listeners'));
+  if (hasEvents || hasListeners) {
+    const eventCount = hasEvents ? fs.readdirSync(path.join(root, 'app', 'Events')).filter(f => f.endsWith('.php')).length : 0;
+    const listenerCount = hasListeners ? fs.readdirSync(path.join(root, 'app', 'Listeners')).filter(f => f.endsWith('.php')).length : 0;
+    patterns.push({
+      pattern: 'Event-Driven',
+      confidence: 'medium',
+      evidence: [`app/Events/ (${eventCount} events)`, `app/Listeners/ (${listenerCount} listeners)`],
+    });
+  }
+
+  // Observer Pattern
+  const hasObservers = fs.existsSync(path.join(root, 'app', 'Observers'));
+  if (hasObservers) {
+    const obsFiles = fs.readdirSync(path.join(root, 'app', 'Observers')).filter(f => f.endsWith('.php'));
+    patterns.push({
+      pattern: 'Observer Pattern',
+      confidence: 'high',
+      evidence: [`app/Observers/ (${obsFiles.length} observers)`],
+    });
+  }
+
+  // Repository Pattern
+  const hasRepositories = fs.existsSync(path.join(root, 'app', 'Repositories'));
+  if (hasRepositories) {
+    patterns.push({
+      pattern: 'Repository Pattern',
+      confidence: 'medium',
+      evidence: ['app/Repositories/'],
+    });
+  }
+
+  // Job Queue / Async Processing
+  const hasJobs = fs.existsSync(path.join(root, 'app', 'Jobs'));
+  const hasNotifications = fs.existsSync(path.join(root, 'app', 'Notifications'));
+  if (hasJobs || hasNotifications) {
+    const jobCount = hasJobs ? fs.readdirSync(path.join(root, 'app', 'Jobs')).filter(f => f.endsWith('.php')).length : 0;
+    patterns.push({
+      pattern: 'Job Queue / Async Processing',
+      confidence: 'medium',
+      evidence: [`app/Jobs/ (${jobCount} jobs)`, hasNotifications ? 'app/Notifications/' : ''].filter(Boolean),
+    });
+  }
+
+  // Multi-Tenant
+  const composer = readJsonSafe(path.join(root, 'composer.json'));
+  if (composer) {
+    const allDeps = { ...composer.require, ...composer['require-dev'] };
+    if (allDeps['spatie/laravel-multitenancy'] || allDeps['tenancy/tenancy-for-laravel']) {
+      patterns.push({
+        pattern: 'Multi-Tenancy',
+        confidence: 'high',
+        evidence: ['Composer dependency: multitenancy package'],
+      });
+    }
+  }
+
+  // Check for company_id pattern (manual tenancy)
+  const modelsDir = path.join(root, 'app', 'Models');
+  if (fs.existsSync(modelsDir)) {
+    const modelFiles = fs.readdirSync(modelsDir).filter(f => f.endsWith('.php'));
+    let companyIdCount = 0;
+    for (const mf of modelFiles.slice(0, 10)) {
+      const content = readFileSafe(path.join(modelsDir, mf));
+      if (content && (content.includes('company_id') || content.includes('belongsTo(Company'))) {
+        companyIdCount++;
+      }
+    }
+    if (companyIdCount >= 2) {
+      patterns.push({
+        pattern: 'Multi-Tenancy (Company-scoped)',
+        confidence: 'high',
+        evidence: [`${companyIdCount} models reference company_id`],
+      });
+    }
+  }
+
+  // Modular / Plugin Architecture
+  const hasModules = fs.existsSync(path.join(root, 'Modules')) || fs.existsSync(path.join(root, 'modules'));
+  if (hasModules) {
+    patterns.push({
+      pattern: 'Modular Architecture',
+      confidence: 'high',
+      evidence: ['Modules/ directory present'],
+    });
+  }
+
+  // API-first
+  const hasApiRoutes = fs.existsSync(path.join(root, 'routes', 'api.php'));
+  if (hasApiRoutes) {
+    patterns.push({
+      pattern: 'REST API',
+      confidence: 'high',
+      evidence: ['routes/api.php present'],
+    });
+  }
+
+  // Spatie Permissions
+  if (composer) {
+    const allDeps = { ...composer.require, ...composer['require-dev'] };
+    if (allDeps['spatie/laravel-permission']) {
+      patterns.push({
+        pattern: 'Role-Based Access Control (RBAC)',
+        confidence: 'high',
+        evidence: ['spatie/laravel-permission in composer.json'],
+      });
+    }
+  }
+
+  // SPA / Inertia
+  if (fs.existsSync(path.join(root, 'resources', 'js'))) {
+    patterns.push({
+      pattern: 'SPA Frontend',
+      confidence: 'medium',
+      evidence: ['resources/js/ directory'],
+    });
+  }
+
+  return patterns;
+}
+
+// ─── 5. Authentication Flow ──────────────────────────────────────────────────
+
+function deepAuth(root) {
+  const result = {
+    mechanism: 'Unknown',
+    providers: [],
+    guards: [],
+    middleware: [],
+    details: [],
+  };
+
+  // Check composer deps
+  const composer = readJsonSafe(path.join(root, 'composer.json'));
+  if (composer) {
+    const allDeps = { ...composer.require, ...composer['require-dev'] };
+    if (allDeps['laravel/sanctum']) { result.mechanism = 'Laravel Sanctum (Token + Cookie Auth)'; result.details.push('Sanctum installed'); }
+    if (allDeps['laravel/passport']) { result.mechanism = 'Laravel Passport (OAuth2)'; result.details.push('Passport installed'); }
+    if (allDeps['tymon/jwt-auth']) { result.mechanism = 'JWT Authentication'; result.details.push('tymon/jwt-auth installed'); }
+    if (allDeps['spatie/laravel-permission']) result.details.push('Spatie Permission (RBAC)');
+  }
+
+  // Check auth config
+  const authConfig = readFileSafe(path.join(root, 'config', 'auth.php'));
+  if (authConfig) {
+    // Extract guards
+    const guardRegex = /'(\w+)'\s*=>\s*\[(?:[^\]]*)'driver'\s*=>\s*'([^']+)'/g;
+    let m;
+    while ((m = guardRegex.exec(authConfig)) !== null) {
+      result.guards.push({ name: m[1], driver: m[2] });
+    }
+
+    // Extract providers
+    const providerRegex = /'(\w+)'\s*=>\s*\[\s*'driver'\s*=>\s*'([^']+)'/g;
+    while ((m = providerRegex.exec(authConfig)) !== null) {
+      result.providers.push({ name: m[1], driver: m[2] });
+    }
+  }
+
+  // Check middleware
+  const middlewareDir = path.join(root, 'app', 'Http', 'Middleware');
+  if (fs.existsSync(middlewareDir)) {
+    const mwFiles = fs.readdirSync(middlewareDir).filter(f => f.endsWith('.php'));
+    for (const mf of mwFiles) {
+      const content = readFileSafe(path.join(middlewareDir, mf));
+      if (!content) continue;
+      const classMatch = content.match(/class\s+(\w+)/);
+      const isAuth = content.includes('auth') || content.includes('Auth') || content.includes('authenticate');
+      result.middleware.push({
+        name: classMatch ? classMatch[1] : mf,
+        file: mf,
+        authRelated: isAuth,
+      });
+    }
+  }
+
+  // Check auth routes
+  const authRoutes = readFileSafe(path.join(root, 'routes', 'auth.php'));
+  if (authRoutes) {
+    if (authRoutes.includes('login')) result.details.push('Login routes defined');
+    if (authRoutes.includes('register')) result.details.push('Registration routes defined');
+    if (authRoutes.includes('password')) result.details.push('Password reset routes defined');
+    if (authRoutes.includes('invitation')) result.details.push('Invitation-based registration');
+  }
+
+  // Check BaseAuthenticatable model
+  if (fs.existsSync(path.join(root, 'app', 'Models', 'BaseAuthenticatable.php'))) {
+    result.details.push('Custom BaseAuthenticatable model');
+  }
+
+  // Check for social auth
+  if (composer) {
+    const allDeps = { ...composer.require, ...composer['require-dev'] };
+    if (allDeps['laravel/socialite']) {
+      result.details.push('Socialite installed (social auth)');
+      result.providers.push({ name: 'Socialite', driver: 'oauth' });
+    }
+  }
+
+  // Check user model
+  const userModel = readFileSafe(path.join(root, 'app', 'Models', 'User.php'));
+  if (userModel) {
+    if (userModel.includes('MustVerifyEmail')) result.details.push('Email verification required');
+    if (userModel.includes('HasApiTokens')) result.details.push('API token authentication (Sanctum)');
+    if (userModel.includes('Notifiable')) result.details.push('Notifications enabled');
+  }
+
+  // Impersonation
+  if (fs.existsSync(path.join(root, 'app', 'Http', 'Controllers', 'ImpersonateController.php'))) {
+    result.details.push('User impersonation supported');
+  }
+
+  return result;
+}
+
+// ─── 6. Key File Summaries ──────────────────────────────────────────────────
+
+function deepKeyFiles(root) {
+  const summaries = [];
+
+  // Entry points and configs
+  const keyPatterns = [
+    { path: 'artisan', desc: 'Laravel CLI entry point' },
+    { path: 'public/index.php', desc: 'Web entry point' },
+    { path: 'composer.json', desc: 'PHP dependency manifest' },
+    { path: 'package.json', desc: 'Node.js dependency manifest' },
+    { path: 'routes/web.php', desc: 'Web routes' },
+    { path: 'routes/api.php', desc: 'API routes' },
+    { path: 'routes/auth.php', desc: 'Authentication routes' },
+    { path: 'routes/settings.php', desc: 'Settings routes' },
+    { path: 'config/app.php', desc: 'Application config' },
+    { path: 'config/auth.php', desc: 'Authentication config' },
+    { path: 'config/database.php', desc: 'Database config' },
+    { path: 'config/mail.php', desc: 'Mail config' },
+    { path: 'config/queue.php', desc: 'Queue config' },
+    { path: 'app/Providers/AppServiceProvider.php', desc: 'Main service provider' },
+    { path: 'app/Models/BaseModel.php', desc: 'Base model class' },
+    { path: 'app/Models/BaseAuthenticatable.php', desc: 'Base authenticatable model' },
+    { path: 'app/Http/Controllers/BaseController.php', desc: 'Base controller' },
+    { path: 'vite.config.ts', desc: 'Vite build config' },
+    { path: 'tsconfig.json', desc: 'TypeScript config' },
+    { path: 'phpunit.xml', desc: 'PHPUnit test config' },
+  ];
+
+  for (const kp of keyPatterns) {
+    const fp = path.join(root, kp.path);
+    if (!fs.existsSync(fp)) continue;
+    const content = readFileSafe(fp, 3000);
+    if (!content) continue;
+
+    const summary = summarizeFile(kp.path, content, kp.desc);
+    summaries.push(summary);
+  }
+
+  return summaries;
+}
+
+function summarizeFile(filePath, content, description) {
+  const lines = content.split('\n');
+  const summary = { file: filePath, description, lines: lines.length };
+
+  // Extract key info based on file type
+  if (filePath.endsWith('.json')) {
+    try {
+      const json = JSON.parse(content);
+      summary.keys = Object.keys(json).slice(0, 10);
+      if (json.name) summary.name = json.name;
+      if (json.version) summary.version = json.version;
+      if (json.scripts) summary.scripts = Object.keys(json.scripts);
+    } catch {}
+  } else if (filePath.endsWith('.php')) {
+    // Extract class name
+    const classMatch = content.match(/class\s+(\w+)/);
+    if (classMatch) summary.className = classMatch[1];
+    // Extract namespace
+    const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+    if (nsMatch) summary.namespace = nsMatch[1];
+    // Extract traits
+    const traits = content.match(/use\s+([\w\\]+Trait)/g);
+    if (traits) summary.traits = traits.map(t => t.replace('use ', ''));
+    // Extract key methods
+    const methods = content.match(/public\s+function\s+(\w+)/g);
+    if (methods) summary.publicMethods = methods.map(m => m.match(/function\s+(\w+)/)[1]).slice(0, 10);
+    // Key imports
+    const imports = content.match(/use\s+([\w\\]+);/g);
+    if (imports) summary.keyImports = imports.map(i => i.replace('use ', '').replace(';', '')).slice(0, 8);
+  } else if (filePath.endsWith('.ts') || filePath.endsWith('.js')) {
+    const funcs = content.match(/(?:export\s+)?(?:function|const)\s+(\w+)/g);
+    if (funcs) summary.exports = funcs.map(f => f.replace(/(?:export\s+)?(?:function|const)\s+/, '')).slice(0, 10);
+  }
+
+  // Brief excerpt
+  const nonEmptyLines = lines.filter(l => l.trim() && !l.trim().startsWith('//') && !l.trim().startsWith('*'));
+  summary.excerpt = nonEmptyLines.slice(0, 5).join('\n').substring(0, 300);
+
+  return summary;
+}
+
+// ─── 7. Event System ────────────────────────────────────────────────────────
+
+function deepEventSystem(root) {
+  const events = [];
+  const listeners = [];
+  const jobs = [];
+  const observers = [];
+  const notifications = [];
+  const mail = [];
+
+  // Events
+  const eventsDir = path.join(root, 'app', 'Events');
+  if (fs.existsSync(eventsDir)) {
+    for (const f of fs.readdirSync(eventsDir).filter(f => f.endsWith('.php'))) {
+      const content = readFileSafe(path.join(eventsDir, f));
+      if (!content) continue;
+      const classMatch = content.match(/class\s+(\w+)/);
+      const implementsMatch = content.match(/implements\s+([\w,]+)/g);
+      const props = content.match(/public\s+(?:function\s+)?\$(\w+)/g);
+      events.push({
+        name: classMatch ? classMatch[1] : f.replace('.php', ''),
+        file: f,
+        properties: props ? props.map(p => p.match(/\$(\w+)/)[1]) : [],
+        interfaces: implementsMatch || [],
+      });
+    }
+  }
+
+  // Listeners
+  const listenersDir = path.join(root, 'app', 'Listeners');
+  if (fs.existsSync(listenersDir)) {
+    for (const f of fs.readdirSync(listenersDir).filter(f => f.endsWith('.php'))) {
+      const content = readFileSafe(path.join(listenersDir, f));
+      if (!content) continue;
+      const classMatch = content.match(/class\s+(\w+)/);
+      const handlesMatch = content.match(/handles\s*=\s*\[([^\]]+)\]/s);
+      listeners.push({
+        name: classMatch ? classMatch[1] : f.replace('.php', ''),
+        file: f,
+        handles: handlesMatch ? handlesMatch[1].match(/[\w\\]+::class/g)?.map(h => h.replace('::class', '').split('\\').pop()) : [],
+      });
+    }
+  }
+
+  // Jobs
+  const jobsDir = path.join(root, 'app', 'Jobs');
+  if (fs.existsSync(jobsDir)) {
+    for (const f of fs.readdirSync(jobsDir).filter(f => f.endsWith('.php'))) {
+      const content = readFileSafe(path.join(jobsDir, f));
+      if (!content) continue;
+      const classMatch = content.match(/class\s+(\w+)/);
+      const queueMatch = content.match(/public\s+\$queue\s*=\s*['"]([^'"]+)['"]/);
+      const triesMatch = content.match(/public\s+\$tries\s*=\s*(\d+)/);
+      const timeoutMatch = content.match(/public\s+\$timeout\s*=\s*(\d+)/);
+      jobs.push({
+        name: classMatch ? classMatch[1] : f.replace('.php', ''),
+        file: f,
+        queue: queueMatch ? queueMatch[1] : 'default',
+        tries: triesMatch ? parseInt(triesMatch[1]) : null,
+        timeout: timeoutMatch ? parseInt(timeoutMatch[1]) : null,
+      });
+    }
+  }
+
+  // Observers
+  const observersDir = path.join(root, 'app', 'Observers');
+  if (fs.existsSync(observersDir)) {
+    for (const f of fs.readdirSync(observersDir).filter(f => f.endsWith('.php'))) {
+      const content = readFileSafe(path.join(observersDir, f));
+      if (!content) continue;
+      const classMatch = content.match(/class\s+(\w+)/);
+      const methods = content.match(/public\s+function\s+(creating|created|updating|updated|deleting|deleted|saving|saved|restoring|restored|forceDeleting|forceDeleted)\s*\(/g);
+      observers.push({
+        name: classMatch ? classMatch[1] : f.replace('.php', ''),
+        file: f,
+        events: methods ? methods.map(m => m.match(/function\s+(\w+)/)[1]) : [],
+      });
+    }
+  }
+
+  // Notifications
+  const notifDir = path.join(root, 'app', 'Notifications');
+  if (fs.existsSync(notifDir)) {
+    for (const f of fs.readdirSync(notifDir).filter(f => f.endsWith('.php'))) {
+      const content = readFileSafe(path.join(notifDir, f));
+      if (!content) continue;
+      const classMatch = content.match(/class\s+(\w+)/);
+      notifications.push({ name: classMatch ? classMatch[1] : f.replace('.php', ''), file: f });
+    }
+  }
+
+  // Mail
+  const mailDir = path.join(root, 'app', 'Mail');
+  if (fs.existsSync(mailDir)) {
+    for (const f of fs.readdirSync(mailDir).filter(f => f.endsWith('.php'))) {
+      const content = readFileSafe(path.join(mailDir, f));
+      if (!content) continue;
+      const classMatch = content.match(/class\s+(\w+)/);
+      const envelope = content.match(/public\s+function\s+envelope\(\)/);
+      mail.push({
+        name: classMatch ? classMatch[1] : f.replace('.php', ''),
+        file: f,
+        mailable: true,
+      });
+    }
+  }
+
+  // Event-Listener mapping (from EventServiceProvider)
+  const eventServiceProvider = readFileSafe(path.join(root, 'app', 'Providers', 'EventServiceProvider.php'));
+  const eventMap = [];
+  if (eventServiceProvider) {
+    const mapMatch = eventServiceProvider.match(/protected\s+\$listen\s*=\s*\[([\s\S]*?)\];/);
+    if (mapMatch) {
+      const entries = mapMatch[1].matchAll(/([\w\\]+)\s*=>\s*\[([^\]]+)\]/g);
+      for (const e of entries) {
+        const event = e[1].split('\\').pop();
+        const listenersList = e[2].match(/[\w\\]+::class/g)?.map(l => l.replace('::class', '').split('\\').pop()) || [];
+        eventMap.push({ event, listeners: listenersList });
+      }
+    }
+  }
+
+  return { events, listeners, jobs, observers, notifications, mail, eventMap };
+}
+
+// ─── 8. Config Summary ──────────────────────────────────────────────────────
+
+function deepConfig(root) {
+  const configs = [];
+
+  const configDir = path.join(root, 'config');
+  if (!fs.existsSync(configDir)) return configs;
+
+  const configFiles = fs.readdirSync(configDir).filter(f => f.endsWith('.php'));
+  for (const cf of configFiles) {
+    const content = readFileSafe(path.join(configDir, cf), 30000);
+    if (!content) continue;
+
+    const envVars = [];
+    const envRegex = /env\s*\(\s*['"]([A-Z_][A-Z0-9_]*)['"](?:\s*,\s*([^)]+))?\)/g;
+    let m;
+    while ((m = envRegex.exec(content)) !== null) {
+      envVars.push({ key: m[1], default: m[2] ? m[2].trim() : 'null' });
+    }
+
+    // Extract top-level keys
+    const topLevel = [];
+    const keyRegex = /^\s*'(\w+)'\s*=>/gm;
+    while ((m = keyRegex.exec(content)) !== null) {
+      topLevel.push(m[1]);
+    }
+
+    configs.push({
+      file: cf.replace('.php', ''),
+      path: 'config/' + cf,
+      envVars,
+      topLevelKeys: [...new Set(topLevel)].slice(0, 20),
+      size: content.length,
+    });
+  }
+
+  return configs;
+}
+
+// ─── 9. Service Layer Map ────────────────────────────────────────────────────
+
+function deepServiceLayer(root) {
+  const services = [];
+
+  const serviceDirs = [
+    { dir: path.join(root, 'app', 'Services'), prefix: '' },
+    { dir: path.join(root, 'help', 'app', 'Services'), prefix: 'help/' },
+  ];
+
+  for (const { dir, prefix } of serviceDirs) {
+    if (!fs.existsSync(dir)) continue;
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.php') && !fs.statSync(path.join(dir, f)).isDirectory());
+
+    for (const f of files) {
+      const content = readFileSafe(path.join(dir, f), 50000);
+      if (!content) continue;
+
+      const classMatch = content.match(/class\s+(\w+)/);
+      if (!classMatch) continue;
+
+      // Extract methods
+      const methods = [];
+      const methodRegex = /public\s+(?:static\s+)?function\s+(\w+)\s*\(([^)]*)\)/g;
+      let mm;
+      while ((mm = methodRegex.exec(content)) !== null) {
+        methods.push({ name: mm[1], params: mm[2].trim() });
+      }
+
+      // Extract dependencies (constructor injection)
+      const deps = [];
+      const constructorMatch = content.match(/public\s+function\s+__construct\s*\(([^)]*)\)/s);
+      if (constructorMatch) {
+        const params = constructorMatch[1].matchAll(/(?:[\w\\]+)\s+\$(\w+)/g);
+        for (const p of params) deps.push(p[1]);
+      }
+
+      // Class dependencies (use statements)
+      const imports = [];
+      const importRegex = /use\s+([\w\\]+);/g;
+      while ((mm = importRegex.exec(content)) !== null) {
+        const imp = mm[1];
+        if (!imp.startsWith('Illuminate\\') && !imp.startsWith('App\\Services')) {
+          imports.push(imp.split('\\').pop());
+        }
+      }
+
+      // Responsibility (from docblock)
+      const docMatch = content.match(/\/\*\*[\s*]*([^@*]+)/);
+      const responsibility = docMatch ? docMatch[1].trim().replace(/\s*\*\s*/g, ' ').trim().substring(0, 200) : '';
+
+      services.push({
+        name: classMatch[1],
+        file: prefix + 'app/Services/' + f,
+        methods,
+        dependencies: deps,
+        keyImports: [...new Set(imports)].slice(0, 8),
+        responsibility,
+      });
+    }
+
+    // Scan subdirectories (e.g., Omnichannel/)
+    const subDirs = fs.readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory());
+    for (const sd of subDirs) {
+      const subFiles = fs.readdirSync(path.join(dir, sd.name)).filter(f => f.endsWith('.php'));
+      for (const f of subFiles) {
+        const content = readFileSafe(path.join(dir, sd.name, f), 50000);
+        if (!content) continue;
+        const classMatch = content.match(/class\s+(\w+)/);
+        if (!classMatch) continue;
+
+        const methods = [];
+        const methodRegex = /public\s+(?:static\s+)?function\s+(\w+)/g;
+        let mm;
+        while ((mm = methodRegex.exec(content)) !== null) methods.push({ name: mm[1] });
+
+        services.push({
+          name: classMatch[1],
+          file: prefix + 'app/Services/' + sd.name + '/' + f,
+          methods,
+          dependencies: [],
+          keyImports: [],
+          responsibility: '',
+        });
+      }
+    }
+  }
+
+  return services;
+}
+
+// ─── 10. Module Boundaries ──────────────────────────────────────────────────
+
+function deepModuleBoundaries(root, entries) {
+  const modules = [];
+
+  // Map Laravel app/ directory structure
+  const appDir = path.join(root, 'app');
+  if (!fs.existsSync(appDir)) return modules;
+
+  const appSubDirs = fs.readdirSync(appDir, { withFileTypes: true }).filter(d => d.isDirectory());
+
+  for (const sd of appSubDirs) {
+    if (IGNORED_DIRS.has(sd.name)) continue;
+    const dirPath = path.join(appDir, sd.name);
+    let fileCount = 0;
+    let phpCount = 0;
+
+    try {
+      const items = fs.readdirSync(dirPath, { withFileTypes: true, recursive: true });
+      fileCount = items.filter(i => i.isFile()).length;
+      phpCount = items.filter(i => i.isFile() && i.name.endsWith('.php')).length;
+    } catch {}
+
+    // Find dependencies (what this module imports from other modules)
+    const dependsOn = new Set();
+    const phpFiles = scanDirRecursive(dirPath, '', 3).filter(f => f.endsWith('.php')).slice(0, 15);
+    for (const fp of phpFiles) {
+      const content = readFileSafe(fp, 30000);
+      if (!content) continue;
+      const imports = content.matchAll(/use\s+App\\(\w+)/g);
+      for (const imp of imports) {
+        const mod = imp[1];
+        if (mod !== sd.name) dependsOn.add(mod);
+      }
+    }
+
+    modules.push({
+      name: sd.name,
+      type: 'Laravel Module',
+      path: 'app/' + sd.name + '/',
+      files: fileCount,
+      phpFiles: phpCount,
+      dependsOn: [...dependsOn].sort(),
+    });
+  }
+
+  // Help subdirectory as separate module
+  const helpDir = path.join(root, 'help');
+  if (fs.existsSync(helpDir)) {
+    let helpFileCount = 0;
+    try {
+      helpFileCount = scanDirRecursive(helpDir, '', 5).length;
+    } catch {}
+
+    modules.push({
+      name: 'Help (Helpdesk)',
+      type: 'Laravel Sub-application',
+      path: 'help/',
+      files: helpFileCount,
+      phpFiles: 0,
+      dependsOn: [],
+    });
+  }
+
+  // Cross-module connections (reverse mapping)
+  const connectionMap = {};
+  for (const mod of modules) {
+    for (const dep of mod.dependsOn) {
+      if (!connectionMap[dep]) connectionMap[dep] = [];
+      if (!connectionMap[dep].includes(mod.name)) connectionMap[dep].push(mod.name);
+    }
+  }
+
+  return { modules, dependedOnBy: connectionMap };
+}
+
 // ─── Output Formatting ───────────────────────────────────────────────────────
 
 function formatMarkdown(result, target) {
   let md = `# 📊 System Analysis Report\n\n`;
-  md += `> Generated by Codebase Scanner v1.0.0\n`;
+  md += `> Generated by Codebase Scanner v2.0.0\n`;
   md += `> Target: \`${target}\`\n`;
   md += `> Date: ${new Date().toISOString()}\n\n`;
   md += `---\n\n`;
@@ -663,26 +1933,10 @@ function formatMarkdown(result, target) {
     const framework = result.entryPoints.filter(e => e.type === 'framework');
     const main = result.entryPoints.filter(e => e.type === 'main');
 
-    if (main.length) {
-      md += `**Main:**\n`;
-      main.forEach(e => md += `- \`${e.file}\`\n`);
-      md += `\n`;
-    }
-    if (bins.length) {
-      md += `**CLI Binaries:**\n`;
-      bins.forEach(e => md += `- \`${e.name || 'default'}\` → \`${e.file}\`\n`);
-      md += `\n`;
-    }
-    if (files.length) {
-      md += `**Entry Files:**\n`;
-      files.forEach(e => md += `- \`${e.file}\`\n`);
-      md += `\n`;
-    }
-    if (framework.length) {
-      md += `**Framework:**\n`;
-      framework.forEach(e => md += `- ${e.name} (\`${e.dir}\`)\n`);
-      md += `\n`;
-    }
+    if (main.length) { md += `**Main:**\n`; main.forEach(e => md += `- \`${e.file}\`\n`); md += `\n`; }
+    if (bins.length) { md += `**CLI Binaries:**\n`; bins.forEach(e => md += `- \`${e.name || 'default'}\` → \`${e.file}\`\n`); md += `\n`; }
+    if (files.length) { md += `**Entry Files:**\n`; files.forEach(e => md += `- \`${e.file}\`\n`); md += `\n`; }
+    if (framework.length) { md += `**Framework:**\n`; framework.forEach(e => md += `- ${e.name} (\`${e.dir}\`)\n`); md += `\n`; }
     if (npmScripts.length) {
       md += `**NPM Scripts:**\n`;
       md += `| Script | Command |\n|---|---|\n`;
@@ -704,18 +1958,14 @@ function formatMarkdown(result, target) {
     if (m.languages.length) {
       md += `**Language Breakdown:**\n\n`;
       md += `| Language | Files | Lines | Size |\n|---|---|---|---|\n`;
-      m.languages.forEach(l => {
-        md += `| ${l.lang} | ${l.files} | ${l.lines.toLocaleString()} | ${l.size} |\n`;
-      });
+      m.languages.forEach(l => { md += `| ${l.lang} | ${l.files} | ${l.lines.toLocaleString()} | ${l.size} |\n`; });
       md += `\n`;
     }
 
     if (m.largestFiles.length) {
       md += `**Largest Files:**\n\n`;
       md += `| File | Lines | Size |\n|---|---|---|\n`;
-      m.largestFiles.forEach(f => {
-        md += `| \`${f.name}\` | ${f.lines.toLocaleString()} | ${f.size} |\n`;
-      });
+      m.largestFiles.forEach(f => { md += `| \`${f.name}\` | ${f.lines.toLocaleString()} | ${f.size} |\n`; });
       md += `\n`;
     }
 
@@ -730,17 +1980,24 @@ function formatMarkdown(result, target) {
   if (result.dependencies && Object.keys(result.dependencies).length) {
     md += `## 📦 Dependencies\n\n`;
     const deps = result.dependencies;
-
+    if (deps.php) {
+      md += `**PHP (Composer):** ${deps.php.production} production, ${deps.php.dev} dev (${deps.php.total} total)\n\n`;
+      if (deps.php.productionList.length) {
+        md += `<details><summary>Production Dependencies (${deps.php.productionList.length})</summary>\n\n`;
+        md += deps.php.productionList.map(d => `- \`${d}\``).join('\n');
+        md += `\n\n</details>\n\n`;
+      }
+      if (deps.php.devList.length) {
+        md += `<details><summary>Dev Dependencies (${deps.php.devList.length})</summary>\n\n`;
+        md += deps.php.devList.map(d => `- \`${d}\``).join('\n');
+        md += `\n\n</details>\n\n`;
+      }
+    }
     if (deps.node) {
       md += `**Node.js:** ${deps.node.production} production, ${deps.node.dev} dev (${deps.node.total} total)\n\n`;
       if (deps.node.productionList.length) {
         md += `<details><summary>Production Dependencies (${deps.node.productionList.length})</summary>\n\n`;
         md += deps.node.productionList.map(d => `- \`${d}\``).join('\n');
-        md += `\n\n</details>\n\n`;
-      }
-      if (deps.node.devList && deps.node.devList.length) {
-        md += `<details><summary>Dev Dependencies (${deps.node.devList.length})</summary>\n\n`;
-        md += deps.node.devList.map(d => `- \`${d}\``).join('\n');
         md += `\n\n</details>\n\n`;
       }
     }
@@ -756,7 +2013,330 @@ function formatMarkdown(result, target) {
     md += `\`\`\`\n${result.structure}\`\`\`\n\n</details>\n\n`;
   }
 
-  md += `---\n\n*Generated by [Codebase Scanner](https://clawhub.com/skills/codebase-scanner) v1.0.0*\n`;
+  // ═══ DEEP SECTIONS ═══
+  if (result.deep) {
+    const d = result.deep;
+
+    // 1. API Endpoints
+    if (d.apiEndpoints) {
+      md += `## 🌐 API Endpoints (deep)\n\n`;
+      const endpoints = d.apiEndpoints.endpoints || [];
+      const controllers = d.apiEndpoints.controllers || [];
+
+      if (endpoints.length) {
+        // Group by source file
+        const bySource = {};
+        for (const ep of endpoints) {
+          const src = ep.source || 'unknown';
+          if (!bySource[src]) bySource[src] = [];
+          bySource[src].push(ep);
+        }
+
+        for (const [src, eps] of Object.entries(bySource)) {
+          md += `**${src}:**\n\n`;
+          md += `| Method | Path | Controller | Action | Middleware |\n|---|---|---|---|---|\n`;
+          for (const ep of eps) {
+            const method = `\`${ep.method}\``;
+            const p = ep.path || '/';
+            const ctrl = ep.controller || '-';
+            const act = ep.action || '-';
+            const mw = ep.middleware?.length ? ep.middleware.join(', ') : '-';
+            md += `| ${method} | \`${p}\` | ${ctrl} | ${act} | ${mw} |\n`;
+          }
+          md += `\n`;
+        }
+        md += `> **Total:** ${endpoints.length} endpoints\n\n`;
+      }
+
+      if (controllers.length) {
+        md += `<details><summary>Controllers (${controllers.length})</summary>\n\n`;
+        md += `| Controller | File | Methods |\n|---|---|---|\n`;
+        for (const c of controllers) {
+          const methods = c.methods.map(m => `${m.name}(${m.params})`).join(', ');
+          md += `| ${c.class} | \`${c.file}\` | ${methods} |\n`;
+        }
+        md += `\n</details>\n\n`;
+      }
+    }
+
+    // 2. Database Schema
+    if (d.databaseSchema) {
+      md += `## 🗄️ Database Schema (deep)\n\n`;
+      const tables = d.databaseSchema.tables || [];
+      const models = d.databaseSchema.models || [];
+
+      if (tables.length) {
+        const createTables = tables.filter(t => t.type === 'create');
+        for (const t of createTables) {
+          md += `### Table: \`${t.name}\` (${t.file})\n\n`;
+          if (t.columns.length) {
+            md += `| Column | Type | Nullable | Default |\n|---|---|---|---|\n`;
+            for (const c of t.columns) {
+              md += `| ${c.name} | ${c.type} | ${c.nullable ? '✅' : '❌'} | ${c.default || '-'} |\n`;
+            }
+            md += `\n`;
+          }
+          if (t.foreignKeys.length) {
+            md += `**Foreign Keys:**\n`;
+            for (const fk of t.foreignKeys) {
+              md += `- \`${fk.column}\` → \`${fk.onTable}\`.\`${fk.references}\`${fk.onDelete ? ' (onDelete: ' + fk.onDelete + ')' : ''}\n`;
+            }
+            md += `\n`;
+          }
+          if (t.indexes.length) {
+            md += `**Indexes:**\n`;
+            for (const idx of t.indexes) {
+              md += `- ${idx.type}: ${idx.columns.join(', ')}\n`;
+            }
+            md += `\n`;
+          }
+        }
+        const alterTables = tables.filter(t => t.type === 'alter');
+        if (alterTables.length) {
+          md += `<details><summary>Schema Alterations (${alterTables.length})</summary>\n\n`;
+          for (const t of alterTables) {
+            md += `- \`${t.name}\` (${t.file}): ${t.columns.length} column changes\n`;
+          }
+          md += `\n</details>\n\n`;
+        }
+      }
+
+      if (models.length) {
+        md += `### Eloquent Models\n\n`;
+        md += `| Model | Table | Fillable | Relationships |\n|---|---|---|---|\n`;
+        for (const m of models) {
+          const fillable = m.fillable.length > 5 ? m.fillable.slice(0, 5).join(', ') + ` +${m.fillable.length - 5}` : m.fillable.join(', ');
+          const rels = m.relationships.map(r => `${r.name}(${r.type})`).join(', ') || '-';
+          md += `| ${m.name} | ${m.table || 'auto'} | ${fillable || '-'} | ${rels} |\n`;
+        }
+        md += `\n`;
+
+        // Detailed relationships
+        const modelsWithRels = models.filter(m => m.relationships.length > 0);
+        if (modelsWithRels.length) {
+          md += `<details><summary>Model Relationships Detail</summary>\n\n`;
+          for (const m of modelsWithRels) {
+            md += `**${m.name}:**\n`;
+            for (const r of m.relationships) {
+              md += `- \`${r.name}\` → ${r.type}(${r.relatedModel})${r.foreignKey ? ' [FK: ' + r.foreignKey + ']' : ''}\n`;
+            }
+            md += `\n`;
+          }
+          md += `</details>\n\n`;
+        }
+      }
+    }
+
+    // 3. Environment Variables
+    if (d.envVars && d.envVars.length) {
+      md += `## 🔧 Environment Variables (deep)\n\n`;
+      md += `| Variable | Example Value | Source | Used In |\n|---|---|---|---|\n`;
+      for (const ev of d.envVars) {
+        const example = ev.example || '-';
+        const src = ev.source || '-';
+        const usage = ev.usage.length ? ev.usage.slice(0, 3).join(', ') + (ev.usage.length > 3 ? ` +${ev.usage.length - 3}` : '') : '-';
+        md += `| \`${ev.name}\` | ${example} | ${src} | ${usage} |\n`;
+      }
+      md += `\n> **Total:** ${d.envVars.length} environment variables\n\n`;
+    }
+
+    // 4. Architecture Patterns
+    if (d.architecture && d.architecture.length) {
+      md += `## 🏗️ Architecture Patterns (deep)\n\n`;
+      md += `| Pattern | Confidence | Evidence |\n|---|---|---|\n`;
+      for (const p of d.architecture) {
+        md += `| ${p.pattern} | ${p.confidence} | ${p.evidence.join('; ')} |\n`;
+      }
+      md += `\n`;
+    }
+
+    // 5. Authentication
+    if (d.auth) {
+      md += `## 🔐 Authentication (deep)\n\n`;
+      md += `**Mechanism:** ${d.auth.mechanism}\n\n`;
+
+      if (d.auth.guards.length) {
+        md += `**Guards:**\n`;
+        md += `| Guard | Driver |\n|---|---|\n`;
+        for (const g of d.auth.guards) md += `| ${g.name} | ${g.driver} |\n`;
+        md += `\n`;
+      }
+
+      if (d.auth.providers.length) {
+        md += `**Providers:**\n`;
+        md += `| Provider | Driver |\n|---|---|\n`;
+        for (const p of d.auth.providers) md += `| ${p.name} | ${p.driver} |\n`;
+        md += `\n`;
+      }
+
+      if (d.auth.middleware.filter(m => m.authRelated).length) {
+        md += `**Auth-related Middleware:**\n`;
+        for (const m of d.auth.middleware.filter(m => m.authRelated)) {
+          md += `- \`${m.name}\` (${m.file})\n`;
+        }
+        md += `\n`;
+      }
+
+      if (d.auth.details.length) {
+        md += `**Details:**\n`;
+        for (const detail of d.auth.details) md += `- ${detail}\n`;
+        md += `\n`;
+      }
+    }
+
+    // 6. Key File Summaries
+    if (d.keyFiles && d.keyFiles.length) {
+      md += `## 📄 Key File Summaries (deep)\n\n`;
+      for (const kf of d.keyFiles) {
+        md += `### \`${kf.file}\` — ${kf.description}\n\n`;
+        md += `- **Lines:** ${kf.lines}\n`;
+        if (kf.className) md += `- **Class:** ${kf.className}\n`;
+        if (kf.namespace) md += `- **Namespace:** ${kf.namespace}\n`;
+        if (kf.publicMethods?.length) md += `- **Public Methods:** ${kf.publicMethods.join(', ')}\n`;
+        if (kf.keyImports?.length) md += `- **Key Imports:** ${kf.keyImports.join(', ')}\n`;
+        if (kf.exports?.length) md += `- **Exports:** ${kf.exports.join(', ')}\n`;
+        if (kf.scripts?.length) md += `- **Scripts:** ${kf.scripts.join(', ')}\n`;
+        if (kf.name) md += `- **Name:** ${kf.name}\n`;
+        if (kf.version) md += `- **Version:** ${kf.version}\n`;
+        if (kf.keys?.length) md += `- **Top-Level Keys:** ${kf.keys.join(', ')}\n`;
+        md += `\n`;
+      }
+    }
+
+    // 7. Event System
+    if (d.eventSystem) {
+      const es = d.eventSystem;
+      md += `## ⚡ Event System (deep)\n\n`;
+
+      if (es.events.length) {
+        md += `### Events (${es.events.length})\n\n`;
+        md += `| Event | Properties | File |\n|---|---|---|\n`;
+        for (const e of es.events) {
+          md += `| ${e.name} | ${e.properties.join(', ') || '-'} | ${e.file} |\n`;
+        }
+        md += `\n`;
+      }
+
+      if (es.listeners.length) {
+        md += `### Listeners (${es.listeners.length})\n\n`;
+        md += `| Listener | Handles | File |\n|---|---|---|\n`;
+        for (const l of es.listeners) {
+          md += `| ${l.name} | ${l.handles.join(', ') || '-'} | ${l.file} |\n`;
+        }
+        md += `\n`;
+      }
+
+      if (es.jobs.length) {
+        md += `### Jobs (${es.jobs.length})\n\n`;
+        md += `| Job | Queue | Tries | Timeout | File |\n|---|---|---|---|---|\n`;
+        for (const j of es.jobs) {
+          md += `| ${j.name} | ${j.queue} | ${j.tries || '-'} | ${j.timeout || '-'}s | ${j.file} |\n`;
+        }
+        md += `\n`;
+      }
+
+      if (es.observers.length) {
+        md += `### Observers (${es.observers.length})\n\n`;
+        md += `| Observer | Events | File |\n|---|---|---|\n`;
+        for (const o of es.observers) {
+          md += `| ${o.name} | ${o.events.join(', ') || '-'} | ${o.file} |\n`;
+        }
+        md += `\n`;
+      }
+
+      if (es.notifications.length) {
+        md += `### Notifications (${es.notifications.length})\n\n`;
+        for (const n of es.notifications) md += `- \`${n.name}\` (${n.file})\n`;
+        md += `\n`;
+      }
+
+      if (es.mail.length) {
+        md += `### Mail (${es.mail.length})\n\n`;
+        for (const m of es.mail) md += `- \`${m.name}\` (${m.file})\n`;
+        md += `\n`;
+      }
+
+      if (es.eventMap.length) {
+        md += `### Event → Listener Map\n\n`;
+        md += `| Event | Listeners |\n|---|---|\n`;
+        for (const em of es.eventMap) {
+          md += `| ${em.event} | ${em.listeners.join(', ')} |\n`;
+        }
+        md += `\n`;
+      }
+    }
+
+    // 8. Configuration
+    if (d.config && d.config.length) {
+      md += `## ⚙️ Configuration (deep)\n\n`;
+      for (const c of d.config) {
+        md += `### \`${c.file}.php\`\n\n`;
+        if (c.topLevelKeys.length) {
+          md += `**Keys:** ${c.topLevelKeys.join(', ')}\n\n`;
+        }
+        if (c.envVars.length) {
+          md += `| Env Var | Default |\n|---|---|\n`;
+          for (const ev of c.envVars) {
+            md += `| \`${ev.key}\` | ${ev.default} |\n`;
+          }
+          md += `\n`;
+        }
+      }
+    }
+
+    // 9. Service Layer
+    if (d.serviceLayer && d.serviceLayer.length) {
+      md += `## 🔌 Service Layer (deep)\n\n`;
+      md += `| Service | Methods | Dependencies | Responsibility |\n|---|---|---|---|\n`;
+      for (const s of d.serviceLayer) {
+        const methods = s.methods.map(m => m.name).slice(0, 5).join(', ') + (s.methods.length > 5 ? ` +${s.methods.length - 5}` : '');
+        const deps = s.dependencies.join(', ') || '-';
+        const resp = s.responsibility ? s.responsibility.substring(0, 100) : '-';
+        md += `| ${s.name} | ${methods} | ${deps} | ${resp} |\n`;
+      }
+      md += `\n`;
+    }
+
+    // 10. Module Boundaries
+    if (d.moduleBoundaries) {
+      md += `## 🧩 Module Boundaries (deep)\n\n`;
+      const mb = d.moduleBoundaries;
+
+      md += `### Module Overview\n\n`;
+      md += `| Module | Type | Files | Depends On |\n|---|---|---|---|\n`;
+      for (const m of mb.modules) {
+        md += `| ${m.name} | ${m.type} | ${m.files} | ${m.dependsOn.join(', ') || '-'} |\n`;
+      }
+      md += `\n`;
+
+      // Dependency graph
+      const depPairs = [];
+      for (const m of mb.modules) {
+        for (const dep of m.dependsOn) {
+          depPairs.push(`${dep} ← ${m.name}`);
+        }
+      }
+      if (depPairs.length) {
+        md += `### Dependency Graph\n\n`;
+        for (const pair of depPairs) md += `- ${pair}\n`;
+        md += `\n`;
+      }
+
+      // Most depended on
+      const dependedOn = mb.dependedOnBy || {};
+      const mostDepended = Object.entries(dependedOn).sort((a, b) => b[1].length - a[1].length).slice(0, 10);
+      if (mostDepended.length) {
+        md += `### Most Depended-On Modules\n\n`;
+        md += `| Module | Depended On By |\n|---|---|\n`;
+        for (const [mod, deps] of mostDepended) {
+          md += `| ${mod} | ${deps.join(', ')} |\n`;
+        }
+        md += `\n`;
+      }
+    }
+  }
+
+  md += `---\n\n*Generated by [Codebase Scanner](https://clawhub.com/skills/codebase-scanner) v2.0.0*\n`;
 
   return md;
 }
@@ -777,15 +2357,11 @@ function main() {
     process.exit(1);
   }
 
-  // Scan
   const entries = walkDir(target, opts.depth, opts.exclude);
   const result = analyzeProject(target, entries, opts);
 
-  // Output
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));
-  } else if (opts.flags.has('markdown')) {
-    console.log(formatMarkdown(result, target));
   } else {
     console.log(formatMarkdown(result, target));
   }
