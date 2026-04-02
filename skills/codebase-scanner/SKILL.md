@@ -328,6 +328,178 @@ node skills/codebase-scanner/scripts/scan.cjs --deep --json /path/to/project > d
 node skills/codebase-scanner/scripts/scan.cjs --deep --stack --metrics /path/to/project
 ```
 
+## Output Format Rules (STRICT)
+
+**Every output section MUST be explicit and exhaustive. Never summarize when you can enumerate.**
+
+### Golden Rules
+1. **No counts without names.** Never write "121 tables found" — list every table name.
+2. **No summaries without items.** Never write "150+ controllers" — list every controller file and class name.
+3. **Show actual data, not descriptions.** Show the real path, real class name, real method signature.
+4. **One item per row in tables.** Every table, route, controller, model, event, service gets its own row.
+5. **Pair related items explicitly.** Events↔Listeners, Controllers↔Routes, Models↔Relationships.
+
+### Directory Tree
+- Show actual file names and paths, not category summaries
+- `├── UserController.php` not `├── Controllers (47 files)`
+- Include file sizes for context
+
+### Database Schema
+- One table per `### Table:` heading
+- Every column listed: `| column_name | type | nullable | default |`
+- Foreign keys listed under their table: `FK: column → referenced_table.referenced_column`
+- Indexes listed: `IDX: column(s)`
+- Eloquent models listed with `$fillable`, `$casts`, and every relationship method
+- Never say "121 tables" — list all 121 table names in a flat list or table
+
+### API Endpoints / Routes
+- One route per table row: `| METHOD | /path | ControllerClass@method | middleware1, middleware2 |`
+- Show the FULL path including any prefix from route groups
+- Show controller class name AND method (e.g., `LeadController@index`)
+- Show inline middleware and group-applied middleware
+- List every route in every route file (web.php, api.php, settings.php, etc.)
+- Never summarize — if there are 200 routes, list all 200
+
+### Controllers
+- One controller per row: `| Controller File | Class Name | Public Methods |`
+- List every public method with its name
+- Show the actual filename (e.g., `LeadController.php`)
+- Show the full class name with namespace
+
+### Models
+- One model per row: `| Model File | Class Name | Table | Fillable Fields | Relationships |`
+- List every `$fillable` field
+- List every relationship method and its type (hasMany, belongsTo, etc.)
+- Show `$casts` if present
+
+### Services
+- One service per row: `| Service File | Class Name | Public Methods | Injected Dependencies |`
+- List every public method
+- Show constructor-injected dependencies
+
+### Events & Listeners (PAIRED)
+- Show events and listeners side-by-side: `| Event Class | Listener Class |`
+- If an event has multiple listeners, list each pair on its own row
+- If a listener handles multiple events, list each pair on its own row
+- Show exact class names, not shortened versions
+
+### Jobs
+- One job per row: `| Job File | Class Name | Queue | Tries | Timeout |`
+- Show extracted queue name, retry count, and timeout if defined
+
+### Observers
+- One observer per row: `| Observer File | Class Name | Observed Model | Lifecycle Events |`
+- List which model it observes
+- List which lifecycle events it handles (creating, updating, deleting, etc.)
+
+### Environment Variables
+- One env var per row: `| Variable Name | Default Value | Source Config File | Used In Files |`
+- Show every file that references the variable
+- Show the default value from `env('KEY', default)` calls
+
+### Configuration
+- Show top-level keys from each config file
+- List `env()` calls with their defaults
+
+### Module Boundaries
+- List every module directory with file count
+- Show dependency relationships explicitly: `Module A → depends on → Module B, Module C`
+
+### Service Layer
+- One service per row with methods and dependencies
+- Show responsibility description if docblock present
+
+### Key File Summaries
+- For each key file: show class name, namespace, public methods, key imports
+- Include brief excerpts of critical code (first 50 lines of important files)
+
+## Output Format Rules (STRICT)
+
+**Every output section MUST be explicit and exhaustive. Never summarize when you can enumerate.**
+
+### Golden Rules
+1. **No counts without names.** Never write "121 tables found" — list every table name.
+2. **No summaries without items.** Never write "150+ controllers" — list every controller file and class name.
+3. **Show actual data, not descriptions.** Show the real path, real class name, real method signature.
+4. **One item per row in tables.** Every table, route, controller, model, event, service gets its own row.
+5. **Pair related items explicitly.** Events↔Listeners, Controllers↔Routes, Models↔Relationships.
+
+### Section-Specific Rules
+
+#### Directory Tree
+- Show actual file names and paths, not category summaries
+- `├── UserController.php` not `├── Controllers (47 files)`
+- Include file sizes for context
+
+#### Database Schema
+- One table per `### Table:` heading
+- Every column listed: `| column_name | type | nullable | default |`
+- Foreign keys listed under their table: `FK: column → referenced_table.referenced_column`
+- Indexes listed: `IDX: column(s)`
+- Eloquent models listed with `$fillable`, `$casts`, and every relationship method
+- Never say "121 tables" — list all 121 table names in a flat list or table
+
+#### API Endpoints / Routes
+- One route per table row: `| METHOD | /path | ControllerClass@method | middleware1, middleware2 |`
+- Show the FULL path including any prefix from route groups
+- Show controller class name AND method (e.g., `LeadController@index`)
+- Show inline middleware and group-applied middleware
+- List every route in every route file (web.php, api.php, settings.php, etc.)
+- Never summarize — if there are 200 routes, list all 200
+
+#### Controllers
+- One controller per row: `| Controller File | Class Name | Public Methods |`
+- List every public method with its name
+- Show the actual filename (e.g., `LeadController.php`)
+- Show the full class name with namespace
+
+#### Models
+- One model per row: `| Model File | Class Name | Table | Fillable Fields | Relationships |`
+- List every `$fillable` field
+- List every relationship method and its type (hasMany, belongsTo, etc.)
+- Show `$casts` if present
+
+#### Services
+- One service per row: `| Service File | Class Name | Public Methods | Injected Dependencies |`
+- List every public method
+- Show constructor-injected dependencies
+
+#### Events & Listeners (PAIRED)
+- Show events and listeners side-by-side: `| Event Class | Listener Class |`
+- If an event has multiple listeners, list each pair on its own row
+- If a listener handles multiple events, list each pair on its own row
+- Show exact class names, not shortened versions
+
+#### Jobs
+- One job per row: `| Job File | Class Name | Queue | Tries | Timeout |`
+- Show extracted queue name, retry count, and timeout if defined
+
+#### Observers
+- One observer per row: `| Observer File | Class Name | Observed Model | Lifecycle Events |`
+- List which model it observes
+- List which lifecycle events it handles (creating, updating, deleting, etc.)
+
+#### Environment Variables
+- One env var per row: `| Variable Name | Default Value | Source Config File | Used In Files |`
+- Show every file that references the variable
+- Show the default value from `env('KEY', default)` calls
+
+#### Configuration
+- Show top-level keys from each config file
+- List `env()` calls with their defaults
+
+#### Module Boundaries
+- List every module directory with file count
+- Show dependency relationships explicitly: `Module A → depends on → Module B, Module C`
+
+#### Service Layer
+- One service per row with methods and dependencies
+- Show responsibility description if docblock present
+
+#### Key File Summaries
+- For each key file: show class name, namespace, public methods, key imports
+- Include brief excerpts of critical code (first 50 lines of important files)
+
 ## Related skills
 
 - `security-audit` — Scan for exposed credentials, weak configs, and vulnerabilities
