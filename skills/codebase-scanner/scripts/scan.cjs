@@ -2401,6 +2401,7 @@ function main() {
 function generateReportFile(result, target) {
   const projectName = path.basename(target);
   const now = new Date().toISOString().replace('T', ' ').split('.')[0] + ' UTC';
+  const deep = result.deep || {};
   let md = '';
 
   md += `# ${projectName} — Scan Report\n\n`;
@@ -2436,21 +2437,22 @@ function generateReportFile(result, target) {
 
   // Database Tables
   md += `## Database Tables\n\n`;
-  if (result.databaseSchema && result.databaseSchema.length) {
+  const dbTables = Array.isArray(deep.databaseSchema) ? deep.databaseSchema : (deep.databaseSchema?.tables || []);
+  if (dbTables.length) {
     md += `| # | Table Name |\n|---|---|\n`;
-    result.databaseSchema.forEach((t, i) => {
-      md += `| ${i + 1} | \`${t.name}\` |\n`;
+    dbTables.forEach((t, i) => {
+      md += `| ${i + 1} | \`${t.name || t}\` |\n`;
     });
   } else {
-    md += `*(no database tables detected)*\n`;
+    md += `*(no database tables detected — use --deep flag)*\n`;
   }
   md += `\n`;
 
   // API Routes
   md += `## API Routes\n\n`;
-  if (result.apiEndpoints && result.apiEndpoints.length) {
+  if (deep.apiEndpoints && deep.apiEndpoints.length) {
     md += `| Method | Path | Controller@Method | Middleware |\n|---|---|---|---|\n`;
-    result.apiEndpoints.forEach(ep => {
+    deep.apiEndpoints.forEach(ep => {
       const ctrl = ep.controller ? `${ep.controller}${ep.action ? '@' + ep.action : ''}` : (ep.action || '-');
       const mw = ep.middleware || '-';
       md += `| ${ep.method} | ${ep.path} | ${ctrl} | ${mw} |\n`;
@@ -2462,10 +2464,11 @@ function generateReportFile(result, target) {
 
   // Controllers
   md += `## Controllers\n\n`;
-  if (result.controllers && result.controllers.length) {
+  const controllers = Array.isArray(deep.keyFiles?.controllers) ? deep.keyFiles.controllers : [];
+  if (controllers.length) {
     md += `| File Name | Class Name |\n|---|---|\n`;
-    result.controllers.forEach(c => {
-      md += `| ${c.file} | ${c.class} |\n`;
+    controllers.forEach(c => {
+      md += `| ${c.file || c.name || '-'} | ${c.class || c.name || '-'} |\n`;
     });
   } else {
     md += `*(no controllers detected — use --deep flag)*\n`;
@@ -2474,10 +2477,11 @@ function generateReportFile(result, target) {
 
   // Models
   md += `## Models\n\n`;
-  if (result.models && result.models.length) {
+  const dbModels = Array.isArray(deep.databaseSchema?.models) ? deep.databaseSchema.models : [];
+  if (dbModels.length) {
     md += `| File Name | Class Name | Table |\n|---|---|---|\n`;
-    result.models.forEach(m => {
-      md += `| ${m.file} | ${m.class} | ${m.table || '-'} |\n`;
+    dbModels.forEach(m => {
+      md += `| ${m.file || '-'} | ${m.class || '-'} | ${m.table || '-'} |\n`;
     });
   } else {
     md += `*(no models detected — use --deep flag)*\n`;
@@ -2486,10 +2490,11 @@ function generateReportFile(result, target) {
 
   // Services
   md += `## Services\n\n`;
-  if (result.services && result.services.length) {
+  if (deep.serviceLayer && deep.serviceLayer.length) {
     md += `| File Name | Class Name | Public Methods |\n|---|---|---|\n`;
-    result.services.forEach(s => {
-      md += `| ${s.file} | ${s.class} | ${s.methods || '-'} |\n`;
+    deep.serviceLayer.forEach(s => {
+      const methods = s.methods ? s.methods.join(', ') : '-';
+      md += `| ${s.file} | ${s.class} | ${methods} |\n`;
     });
   } else {
     md += `*(no services detected — use --deep flag)*\n`;
@@ -2498,25 +2503,38 @@ function generateReportFile(result, target) {
 
   // Events & Listeners
   md += `## Events & Listeners\n\n`;
-  if (result.eventSystem && result.eventSystem.pairs && result.eventSystem.pairs.length) {
-    md += `| Event Class | Listener Class |\n|---|---|\n`;
-    result.eventSystem.pairs.forEach(p => {
-      md += `| ${p.event} | ${p.listener} |\n`;
-    });
-  } else if (result.eventSystem && result.eventSystem.events && result.eventSystem.events.length) {
-    md += `| Event Class | Listener Class |\n|---|---|\n`;
-    result.eventSystem.events.forEach(e => {
-      const listeners = result.eventSystem.listeners
-        ?.filter(l => l.handles === e.name)
-        ?.map(l => l.name) || [];
-      if (listeners.length) {
-        listeners.forEach(l => {
-          md += `| ${e.name} | ${l} |\n`;
+  if (deep.eventSystem) {
+    const events = deep.eventSystem.events || [];
+    const listeners = deep.eventSystem.listeners || [];
+    if (events.length || listeners.length) {
+      md += `| Event Class | Listener Class |\n|---|---|\n`;
+      // Try to pair events with listeners
+      const eventListenerMap = deep.eventSystem.eventListenerMap || {};
+      if (Object.keys(eventListenerMap).length) {
+        Object.entries(eventListenerMap).forEach(([eventName, listenerNames]) => {
+          listenerNames.forEach(ln => {
+            md += `| ${eventName} | ${ln} |\n`;
+          });
         });
       } else {
-        md += `| ${e.name} | - |\n`;
+        events.forEach(e => {
+          const matchingListeners = listeners.filter(l => l.handles === e.name);
+          if (matchingListeners.length) {
+            matchingListeners.forEach(l => {
+              md += `| ${e.name} | ${l.name} |\n`;
+            });
+          } else {
+            md += `| ${e.name} | - |\n`;
+          }
+        });
+        // Listeners without matching events
+        listeners.filter(l => !events.some(e => e.name === l.handles)).forEach(l => {
+          md += `| - | ${l.name} |\n`;
+        });
       }
-    });
+    } else {
+      md += `*(no events detected — use --deep flag)*\n`;
+    }
   } else {
     md += `*(no events detected — use --deep flag)*\n`;
   }
@@ -2524,19 +2542,19 @@ function generateReportFile(result, target) {
 
   // Authentication
   md += `## Authentication\n\n`;
-  if (result.authentication) {
-    const auth = result.authentication;
+  if (deep.auth) {
+    const auth = deep.auth;
     if (auth.guards && auth.guards.length) {
       md += `| Guard | Driver |\n|---|---|\n`;
       auth.guards.forEach(g => {
-        md += `| ${g.name} | ${g.driver} |\n`;
+        md += `| ${g.name || g} | ${g.driver || '-'} |\n`;
       });
       md += `\n`;
     }
     if (auth.providers && auth.providers.length) {
       md += `| Provider | Driver |\n|---|---|\n`;
       auth.providers.forEach(p => {
-        md += `| ${p.name} | ${p.driver} |\n`;
+        md += `| ${p.name || p} | ${p.driver || '-'} |\n`;
       });
       md += `\n`;
     }
@@ -2560,8 +2578,8 @@ function generateReportFile(result, target) {
 
   // Architecture Observations
   md += `## Architecture Observations\n\n`;
-  if (result.architecturePatterns && result.architecturePatterns.patterns && result.architecturePatterns.patterns.length) {
-    result.architecturePatterns.patterns.forEach(p => {
+  if (deep.architecture && deep.architecture.patterns && deep.architecture.patterns.length) {
+    deep.architecture.patterns.forEach(p => {
       md += `- **${p.pattern}**: ${p.evidence || 'detected'}\n`;
     });
     md += `\n`;
@@ -2576,18 +2594,18 @@ function generateReportFile(result, target) {
       observations.push(`📊 Large codebase: ${result.metrics.totalFiles} files, ${result.metrics.totalLines.toLocaleString()} lines`);
     }
   }
-  if (result.apiEndpoints && result.apiEndpoints.length > 100) {
-    observations.push(`🌐 Large API surface: ${result.apiEndpoints.length} routes`);
+  if (deep.apiEndpoints && deep.apiEndpoints.length > 100) {
+    observations.push(`🌐 Large API surface: ${deep.apiEndpoints.length} routes`);
   }
-  if (result.databaseSchema && result.databaseSchema.length > 50) {
-    observations.push(`🗄️ Complex schema: ${result.databaseSchema.length} tables`);
+  if (deep.databaseSchema && deep.databaseSchema.length > 50) {
+    observations.push(`🗄️ Complex schema: ${deep.databaseSchema.length} tables`);
   }
   if (observations.length) {
     observations.forEach(o => {
       md += `- ${o}\n`;
     });
   }
-  if (!result.architecturePatterns?.patterns?.length && !observations.length) {
+  if ((!deep.architecture?.patterns?.length) && !observations.length) {
     md += `*(no observations — use --deep flag for deeper analysis)*\n`;
   }
   md += `\n`;
