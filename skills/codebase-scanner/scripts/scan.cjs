@@ -165,16 +165,27 @@ function extractMongooseModels(root) {
   const entries = scanDirRecursive(root, '', 5);
   
   for (const fp of entries) {
-    if (!fp.includes('model') && !fp.includes('schema')) continue;
     if (!fp.endsWith('.js') && !fp.endsWith('.ts')) continue;
+    if (fp.includes('node_modules')) continue;
     
     const content = readFileSafe(path.join(root, fp), 30000);
     if (!content) continue;
     
     // mongoose.model('Name', schema)
-    const modelMatch = content.match(/mongoose\.model\s*\(\s*['"]([^'"]+)['"]\s*,/);
+    const modelMatch = content.match(/mongoose\.model\s*\(\s*['"]([^'"]+)['"]\s*,\s*([^,\n]+)/);
     // new mongoose.Schema
-    const schemaMatch = content.match(/new\s+mongoose\.Schema\s*\(/);
+    const schemaMatch = content.match(/new\s+mongoose\.Schema\s*\(\s*\{([\s\S]*?)\}/);
+    // Schema methods and statics
+    const methods = content.match(/Schema\.method\s*\(\s*['"](\w+)['"]\s*,/g)?.map(m => m.match(/['"](\w+)['"]/)?.[1]).filter(Boolean) || [];
+    const statics = content.match(/Schema\.static\s*\(\s*['"](\w+)['"]\s*,/g)?.map(m => m.match(/['"](\w+)['"]/)?.[1]).filter(Boolean) || [];
+    // Virtuals
+    const virtuals = content.match(/Schema\.virtual\s*\(\s*['"](\w+)['"]\s*/g)?.map(m => m.match(/['"](\w+)['"]/)?.[1]).filter(Boolean) || [];
+    // Relationships
+    const relationships = [];
+    if (content.includes('hasOne') || content.includes('hasMany') || content.includes('belongsTo') || content.includes('ref:')) {
+      const relMatch = content.matchAll(/(?:hasOne|hasMany|belongsTo|ref:|populate)\s*\(\s*['"](\w+)['"]/g);
+      for (const r of relMatch) relationships.push(r[1]);
+    }
     
     if (modelMatch || schemaMatch) {
       const name = modelMatch ? modelMatch[1] : path.basename(fp, '.js').replace(/[-_]?model/i, '');
@@ -182,12 +193,57 @@ function extractMongooseModels(root) {
         name,
         file: fp,
         type: 'Mongoose Model',
+        schema: schemaMatch ? 'inline schema detected' : 'schema reference',
+        methods: methods.slice(0, 8),
+        statics: statics.slice(0, 5),
+        virtuals: virtuals.slice(0, 5),
+        relationships: relationships,
         evidence: 'fact: mongoose model/schema found',
       });
     }
   }
   
   return models;
+}
+
+// Enhanced: Extract database config and connection
+function extractDatabaseConfig(root) {
+  const dbConfig = { type: null, connections: [], schemas: [] };
+  
+  // Check package.json for database dependencies
+  const pkg = readJsonSafe(path.join(root, 'package.json'));
+  const deps = pkg?.dependencies || {};
+  
+  if (deps.mongoose || deps.mongodb) {
+    dbConfig.type = 'MongoDB (Mongoose)';
+    dbConfig.connections.push({ type: 'fact', detail: 'MongoDB driver in dependencies' });
+  }
+  if (deps.pg || deps.postgres) dbConfig.type = 'PostgreSQL';
+  if (deps.mysql2 || deps.mysql) dbConfig.type = 'MySQL';
+  if (deps.sqlite3) dbConfig.type = 'SQLite';
+  
+  // Find database config files
+  const configFiles = scanDirRecursive(root, '', 3).filter(f => 
+    f.includes('config') && (f.endsWith('.js') || f.endsWith('.json')) &&
+    (f.includes('database') || f.includes('db') || f.includes('mongo') || f.includes('postgres'))
+  );
+  
+  for (const fp of configFiles.slice(0, 5)) {
+    const content = readFileSafe(path.join(root, fp), 15000);
+    if (!content) continue;
+    
+    const connMatch = content.match(/mongodb(?:\+srv)?:\/\/[^\s'"]+/g);
+    const uriMatch = content.match(/(?:DB_|DATABASE_|MONGO_|POSTGRES_|MYSQL_)\w+/g);
+    
+    if (connMatch) {
+      dbConfig.schemas.push({ file: fp, type: 'MongoDB connection string', evidence: 'fact: connection found' });
+    }
+    if (uriMatch) {
+      dbConfig.connections.push({ type: 'fact', detail: `env vars: ${uriMatch.slice(0, 5).join(', ')}` });
+    }
+  }
+  
+  return dbConfig;
 }
 
 function extractExpressMiddleware(root) {
@@ -330,6 +386,172 @@ function extractExpressWebhooks(root) {
   }
   
   return webhooks;
+}
+
+// NEW: Extract jobs, cron, scheduled tasks
+function extractExpressJobs(root) {
+  const jobs = [];
+  const entries = scanDirRecursive(root, '', 5);
+  
+  for (const fp of entries) {
+    if (!fp.endsWith('.js')) continue;
+    if (fp.includes('node_modules')) continue;
+    
+    const content = readFileSafe(path.join(root, fp), 25000);
+    if (!content) continue;
+    
+    // node-cron, cron syntax
+    const hasCron = content.includes('cron.schedule') || content.includes('node-cron');
+    // Bull/Redis queue
+    const hasQueue = content.includes('Queue') || content.includes('bull') || content.includes('async.queue');
+    // setInterval/setTimeout for scheduled tasks
+    const hasScheduled = content.includes('setInterval') || content.includes('setTimeout');
+    // Worker pattern
+    const hasWorker = content.includes('Worker') || content.includes('Job') || content.includes('process.nextTick');
+    
+    if (hasCron || hasQueue || hasScheduled || hasWorker) {
+      const name = path.basename(fp, '.js');
+      let type = 'Scheduled Task';
+      if (hasCron) type = 'Cron Job';
+      else if (hasQueue) type = 'Queue Job';
+      else if (hasWorker) type = 'Background Worker';
+      
+      // Extract schedule if present
+      let schedule = null;
+      if (hasCron) {
+        const cronMatch = content.match(/cron\.schedule\s*\(\s*['"]([^'"]+)['"]/);
+        schedule = cronMatch ? cronMatch[1] : null;
+      }
+      
+      jobs.push({
+        name,
+        file: fp,
+        type,
+        schedule,
+        evidence: 'fact: job/scheduler pattern found in code',
+      });
+    }
+  }
+  
+  return jobs;
+}
+
+// NEW: Extract controller handler methods for better route mapping
+function extractControllerHandlers(root) {
+  const handlers = {};
+  const entries = scanDirRecursive(root, '', 4);
+  
+  for (const fp of entries) {
+    if (!fp.includes('controller') || !fp.endsWith('.js')) continue;
+    if (fp.includes('node_modules')) continue;
+    
+    const content = readFileSafe(path.join(root, fp), 30000);
+    if (!content) continue;
+    
+    const controllerName = path.basename(fp, '.js').replace(/Controller$/, '');
+    const methods = [];
+    
+    // Match async function handlerName(req, res)
+    const asyncMatches = content.matchAll(/async\s+(?:function\s+)?(\w+)\s*\([^)]*\)/g);
+    for (const match of asyncMatches) {
+      const methodName = match[1];
+      // Filter out non-handlers
+      if (!methodName.match(/^(get|post|put|delete|patch|handle|index|create|update|remove|delete|show|list)$/i) &&
+          !methodName.includes('Handler') && !methodName.includes('Action')) {
+        continue;
+      }
+      methods.push(methodName);
+    }
+    
+    // Match regular function handlers
+    const funcMatches = content.matchAll(/(?:function\s+|module\.exports\s*=\s*)(?:async\s+)?(\w+)\s*\([^)]*\)/g);
+    for (const match of funcMatches) {
+      const methodName = match[1];
+      if (methodName !== 'require' && !methods.includes(methodName)) {
+        methods.push(methodName);
+      }
+    }
+    
+    if (methods.length > 0) {
+      handlers[controllerName] = methods;
+    }
+  }
+  
+  return handlers;
+}
+
+// NEW: Separate middleware from controllers in auth section
+function extractAuthComponents(root) {
+  const auth = {
+    guards: [],
+    providers: [],
+    middleware: [],
+    controllers: [],
+    components: [],
+  };
+  
+  const entries = scanDirRecursive(root, '', 4);
+  
+  for (const fp of entries) {
+    if (!fp.endsWith('.js')) continue;
+    if (fp.includes('node_modules')) continue;
+    
+    const content = readFileSafe(path.join(root, fp), 20000);
+    if (!content) continue;
+    
+    const basename = path.basename(fp, '.js');
+    
+    // Middleware: auth.js, jwt.js, verify.js, etc.
+    if (fp.includes('middleware') || basename.includes('Auth') || basename.includes('Middleware') || 
+        basename.includes('Verify') || basename.includes('Guard')) {
+      const hasJWT = content.includes('jwt') || content.includes('verify');
+      const hasBcrypt = content.includes('bcrypt') || content.includes('hash') || content.includes('compare');
+      const hasPassport = content.includes('passport');
+      const hasSession = content.includes('session') || content.includes('cookie');
+      
+      let type = 'Auth Middleware';
+      if (hasJWT) type = 'JWT Auth';
+      else if (hasBcrypt) type = 'Password Hash';
+      else if (hasPassport) type = 'Passport Strategy';
+      else if (hasSession) type = 'Session Auth';
+      
+      auth.middleware.push({
+        name: basename,
+        file: fp,
+        type,
+        evidence: 'fact: auth middleware component found',
+      });
+      continue;
+    }
+    
+    // Controllers with auth logic
+    if (fp.includes('controller') || basename.includes('Controller')) {
+      if (content.includes('login') || content.includes('register') || content.includes('auth') || 
+          content.includes('verify') || content.includes('token') || content.includes('password')) {
+        auth.controllers.push({
+          name: basename,
+          file: fp,
+          type: 'Auth Controller',
+          evidence: 'fact: auth controller found',
+        });
+      }
+      continue;
+    }
+    
+    // Auth components: strategies, services, etc.
+    if (basename.includes('Strategy') || basename.includes('Provider') || basename.includes('Service')) {
+      if (content.includes('verify') || content.includes('authenticate') || content.includes('authorize')) {
+        auth.components.push({
+          name: basename,
+          file: fp,
+          type: basename.includes('Strategy') ? 'Passport Strategy' : 'Auth Component',
+          evidence: 'fact: auth component found',
+        });
+      }
+    }
+  }
+  
+  return auth;
 }
 
 // ─── Laravel Extraction ───────────────────────────────────────────────────
@@ -600,35 +822,61 @@ function normalizeServices(services) {
 function synthesizeWorkflows(data) {
   const workflows = [];
   
+  // User authentication flow
+  if (data.auth?.controllers?.length || data.auth?.middleware?.length) {
+    workflows.push({
+      type: 'strong inference',
+      description: `User authentication flow detected: ${(data.auth.controllers || []).length} auth controllers, ${(data.auth.middleware || []).length} auth middleware`,
+    });
+  }
+  
   // API → Controller → Service → Database
   if (data.routes?.length && data.services?.length && data.models?.length) {
     workflows.push({
       type: 'strong inference',
-      description: `API → controller → service → database flow detected (${data.routes.length} routes, ${data.services.length} services)`,
+      description: `CRUD operation flow: ${data.routes.length} endpoints → services → ${data.models.length} models → database`,
     });
   }
   
-  // Event-driven
-  if (data.events?.length && data.listeners?.length) {
+  // Event-driven async
+  if (data.jobs?.length) {
+    const jobTypes = [...new Set(data.jobs.map(j => j.type))].join(', ');
     workflows.push({
       type: 'strong inference',
-      description: `Event-driven async flow detected (${data.events.length} events, ${data.listeners.length} listeners)`,
+      description: `Background job processing: ${data.jobs.length} jobs (${jobTypes})`,
     });
   }
   
-  // Auth flow
-  if (data.auth?.guards?.length) {
-    workflows.push({
-      type: 'strong inference',
-      description: `Authentication flow detected (${data.auth.guards.length} guards configured)`,
-    });
-  }
-  
-  // External integrations
+  // External integrations flow
   if (data.integrations?.length) {
+    const dbType = data.dbConfig?.type || 'database';
     workflows.push({
       type: 'strong inference',
-      description: `External integration flow detected (${data.integrations.length} integrations)`,
+      description: `Data persistence: ${dbType} with ${data.integrations.filter(i => i.type === 'Database').length} database drivers`,
+    });
+  }
+  
+  // Webhook processing
+  if (data.webhooks?.length) {
+    workflows.push({
+      type: 'strong inference',
+      description: `External webhook integration: ${data.webhooks.length} webhook endpoints for third-party callbacks`,
+    });
+  }
+  
+  // Payment/transaction flow (common pattern)
+  if (data.integrations?.some(i => i.name.includes('stripe') || i.name.includes('payment'))) {
+    workflows.push({
+      type: 'weak inference',
+      description: 'Payment processing flow detected (Stripe or payment integration found)',
+    });
+  }
+  
+  // Real-time/notification flow
+  if (data.integrations?.some(i => i.name.includes('socket') || i.name.includes('pusher'))) {
+    workflows.push({
+      type: 'weak inference',
+      description: 'Real-time notification flow detected (socket.io or similar)',
     });
   }
   
@@ -699,6 +947,19 @@ function renderReport(data, target) {
   
   // 6. Database and Persistence Model
   md += `## 6. Database and Persistence Model\n\n`;
+  
+  // Database type and config first
+  if (data.dbConfig?.type) {
+    md += `### Database Type\n\n`;
+    md += `- **${data.dbConfig.type}** — detected from dependencies and config\n`;
+    if (data.dbConfig.connections?.length) {
+      data.dbConfig.connections.slice(0, 3).forEach(c => {
+        md += `- ${c.type}: ${c.detail}\n`;
+      });
+    }
+    md += '\n';
+  }
+  
   if (data.tables?.length) {
     md += `### Tables (${data.tables.length})\n\n`;
     md += '| table | columns | evidence |\n|---|---|---|\n';
@@ -707,7 +968,7 @@ function renderReport(data, target) {
       md += `| ${t.name} | ${cols} | ${t.evidence || 'fact: migration found'} |\n`;
     });
     md += '\n';
-  } else {
+  } else if (!data.dbConfig?.type) {
     md += '*not resolved from static analysis*\n\n';
   }
   
@@ -715,10 +976,11 @@ function renderReport(data, target) {
   md += `## 7. Domain Models and Relationships\n\n`;
   if (data.models?.length) {
     md += `### Models (${data.models.length})\n\n`;
-    md += '| model | table | relationships |\n|---|---|---|\n';
+    md += '| model | type | methods | relationships |\n|---|---|---|---|\n';
     data.models.slice(0, 25).forEach(m => {
+      const methods = m.methods?.slice(0, 3).join(', ') || m.statics?.slice(0, 3).join(', ') || '-';
       const rels = m.relationships?.length ? m.relationships.join(', ') : '-';
-      md += `| ${m.name} | ${m.table || '-'} | ${rels} |\n`;
+      md += `| ${m.name} | ${m.type || 'Model'} | ${methods} | ${rels} |\n`;
     });
     md += '\n';
   } else {
@@ -741,45 +1003,84 @@ function renderReport(data, target) {
   
   // 9. Jobs, Events, Listeners, Observers
   md += `## 9. Jobs, Events, Listeners, Observers\n\n`;
+  const hasJobs = data.jobs?.length;
   const hasEvents = data.events?.length;
   const hasListeners = data.listeners?.length;
   
-  if (hasEvents || hasListeners) {
-    if (hasEvents) {
-      md += `### Events (${data.events.length})\n\n`;
-      data.events.slice(0, 10).forEach(e => md += `- ${e.name}\n`);
-      md += '\n';
-    }
-    if (hasListeners) {
-      md += `### Listeners (${data.listeners.length})\n\n`;
-      data.listeners.slice(0, 10).forEach(l => {
-        const handles = l.handles || 'not resolved from registration';
-        md += `- ${l.name}: handles ${handles}\n`;
-      });
-      md += '\n';
-    }
-  } else {
+  if (hasJobs) {
+    md += `### Background Jobs (${data.jobs.length})\n\n`;
+    md += '| job | type | schedule | evidence |\n|---|---|---|---|\n';
+    data.jobs.slice(0, 15).forEach(j => {
+      const schedule = j.schedule || '-';
+      md += `| ${j.name} | ${j.type} | ${schedule} | ${j.evidence} |\n`;
+    });
+    md += '\n';
+  }
+  if (hasEvents) {
+    md += `### Events (${data.events.length})\n\n`;
+    data.events.slice(0, 10).forEach(e => md += `- ${e.name}\n`);
+    md += '\n';
+  }
+  if (hasListeners) {
+    md += `### Listeners (${data.listeners.length})\n\n`;
+    data.listeners.slice(0, 10).forEach(l => {
+      const handles = l.handles || 'not resolved from registration';
+      md += `- ${l.name}: handles ${handles}\n`;
+    });
+    md += '\n';
+  }
+  if (!hasJobs && !hasEvents && !hasListeners) {
     md += '*not resolved from static analysis*\n\n';
   }
   
   // 10. Auth, Permissions, Tenancy
   md += `## 10. Auth, Permissions, Tenancy\n\n`;
-  if (data.auth?.guards?.length) {
+  
+  // Separate properly: middleware first, then controllers, then components (for Express)
+  if (data.auth?.middleware?.length && Array.isArray(data.auth.middleware[0])) {
+    md += '### Auth Middleware\n\n';
+    data.auth.middleware.slice(0, 12).forEach(m => {
+      md += `- **${m.name}** (${m.type}): ${m.evidence}\n`;
+    });
+    md += '\n';
+  }
+  
+  if (data.auth?.controllers?.length) {
+    md += '### Auth Controllers\n\n';
+    data.auth.controllers.slice(0, 8).forEach(c => {
+      md += `- **${c.name}**: ${c.evidence}\n`;
+    });
+    md += '\n';
+  }
+  
+  if (data.auth?.components?.length) {
+    md += '### Auth Components\n\n';
+    data.auth.components.slice(0, 8).forEach(c => {
+      md += `- **${c.name}** (${c.type}): ${c.evidence}\n`;
+    });
+    md += '\n';
+  }
+  
+  // Fallback for Laravel-style auth (array of strings)
+  if (data.auth?.guards?.length && !Array.isArray(data.auth?.middleware?.[0])) {
     md += '### Authentication Guards\n\n';
     data.auth.guards.forEach(g => md += `- fact: guard '${g.name}' driver '${g.driver}'\n`);
     md += '\n';
   }
-  if (data.auth?.providers?.length) {
+  if (data.auth?.providers?.length && !Array.isArray(data.auth?.middleware?.[0])) {
     md += '### User Providers\n\n';
     data.auth.providers.forEach(p => md += `- fact: provider '${p.name}' driver '${p.driver}'\n`);
     md += '\n';
   }
-  if (data.auth?.middleware?.length) {
+  if (data.auth?.middleware?.length && !Array.isArray(data.auth?.middleware?.[0])) {
     md += '### Auth Middleware\n\n';
     data.auth.middleware.forEach(m => md += `- fact: middleware '${m}' registered\n`);
     md += '\n';
   }
-  if (!data.auth) md += '*not resolved from static analysis*\n\n';
+  
+  if (!data.auth?.guards?.length && !data.auth?.middleware?.length && !data.auth?.controllers?.length) {
+    md += '*not resolved from static analysis*\n\n';
+  }
   
   // 11. Integrations and External Systems
   md += `## 11. Integrations and External Systems\n\n`;
@@ -899,7 +1200,8 @@ function main() {
   
   // Phase 2: Extraction
   console.error('📦 Phase 2: Extraction (' + framework + ')...');
-  let routes = [], tables = [], models = [], services = [], events = [], listeners = [], auth = {}, integrations = [], webhooks = [], jobs = [];
+  let routes = [], tables = [], models = [], services = [], events = [], listeners = [], auth = {}, integrations = [], webhooks = [], jobs = [], dbConfig = {};
+  let handlers = {}; // Controller handler mapping
   
   if (framework === 'express' || framework === 'nodejs') {
     routes = extractExpressRoutes(target);
@@ -907,7 +1209,10 @@ function main() {
     services = extractExpressServices(target);
     integrations = extractNodeIntegrations(target);
     webhooks = extractExpressWebhooks(target);
-    auth = { guards: [], providers: [], middleware: extractExpressMiddleware(target).map(m => m.name) };
+    jobs = extractExpressJobs(target);
+    auth = extractAuthComponents(target); // NEW: better auth separation
+    dbConfig = extractDatabaseConfig(target); // NEW: database config
+    handlers = extractControllerHandlers(target); // NEW: controller handler mapping
   } else if (framework === 'laravel') {
     routes = extractLaravelRoutes(target);
     tables = extractLaravelMigrations(target);
@@ -917,6 +1222,7 @@ function main() {
     listeners = extractLaravelListeners(target);
     auth = extractLaravelAuth(target);
     integrations = [];
+    dbConfig = { type: 'MySQL/PostgreSQL (Laravel)', connections: [], schemas: [] };
   }
   
   // Phase 3: Normalization
@@ -927,7 +1233,7 @@ function main() {
   
   // Phase 4: Synthesis
   console.error('🔗 Phase 4: Synthesis...');
-  const workflows = synthesizeWorkflows({ routes, services, models, events, listeners, auth, integrations });
+  const workflows = synthesizeWorkflows({ routes, services, models, events, listeners, auth, integrations, jobs, webhooks, dbConfig });
   
   // Structure
   let structure = '';
@@ -936,7 +1242,7 @@ function main() {
     structure = entries.slice(0, 60).join('\n');
   } catch {}
   
-  const data = { framework, languages, routes, tables, models, services, events, listeners, auth, integrations, webhooks, jobs, workflows, structure };
+  const data = { framework, languages, routes, tables, models, services, events, listeners, auth, integrations, webhooks, jobs, workflows, structure, dbConfig };
   
   // Phase 5: Rendering
   console.error('📝 Phase 5: Rendering...');
