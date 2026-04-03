@@ -2764,15 +2764,17 @@ function formatMarkdown(result, target) {
 
       md += `### Module Overview\n\n`;
       md += `| Module | Type | Files | Depends On |\n|---|---|---|---|\n`;
-      for (const m of mb.modules) {
-        md += `| ${m.name} | ${m.type} | ${m.files} | ${m.dependsOn.join(', ') || '-'} |\n`;
+      const modules = mb.modules || [];
+      for (const m of modules) {
+        const deps = m.dependsOn ? m.dependsOn.join(', ') : '-';
+        md += `| ${m.name || 'unknown'} | ${m.type || 'module'} | ${m.files || 0} | ${deps} |\n`;
       }
       md += `\n`;
 
       // Dependency graph
       const depPairs = [];
-      for (const m of mb.modules) {
-        for (const dep of m.dependsOn) {
+      for (const m of (mb.modules || [])) {
+        for (const dep of (m.dependsOn || [])) {
           depPairs.push(`${dep} ← ${m.name}`);
         }
       }
@@ -2861,273 +2863,233 @@ function main() {
   }
 }
 
-// ─── Report File Generator (v3.0 System Understanding) ────────────────────
+// ─── Report File Generator (v4.0 - 15 Section Schema) ────────────────────
 
 function generateReportFile(result, target) {
   const projectName = path.basename(target);
   const deep = result.deep || {};
   let md = '';
 
-  // Header
   md += `# ${projectName} — system understanding report\n\n`;
   md += `> scanned source: ${target}\n`;
   md += `> scanned ref: develop\n`;
   md += `> scan mode: exhaustive markdown report\n`;
-  md += `> confidence note: Static codebase analysis. Runtime behavior, actual API contracts, and live data flows are inferred from code patterns and may differ from production reality.\n\n---\n\n`;
+  md += `> confidence note: Static codebase analysis. Runtime behavior inferred, not verified.\n\n---\n\n`;
 
-  // Executive Summary
-  md += `## executive summary\n\n`;
+  // 1. Executive Summary
+  md += `## 1. Executive Summary\n\n`;
   const summaryLines = [];
-  if (result.overview?.type) summaryLines.push(`type: ${result.overview.type}`);
-  if (result.stack?.frameworks?.length) summaryLines.push(`frameworks: ${result.stack.frameworks.join(', ')}`);
-  if (deep.apiEndpoints?.length) summaryLines.push(`API surface: ${deep.apiEndpoints.length} routes`);
-  if (deep.databaseSchema?.tables?.length) summaryLines.push(`database: ${deep.databaseSchema.tables.length} tables`);
-  if (deep.serviceLayer?.length) summaryLines.push(`services: ${deep.serviceLayer.length} classes`);
-  if (deep.keyFiles?.controllers?.length) summaryLines.push(`controllers: ${deep.keyFiles.controllers.length}`);
-  if (deep.eventSystem?.events?.length) summaryLines.push(`events: ${deep.eventSystem.events.length}`);
+  if (result.overview?.type) summaryLines.push('type: ' + result.overview.type);
+  if (result.stack?.frameworks?.length) summaryLines.push('frameworks: ' + result.stack.frameworks.join(', '));
+  if (deep.apiEndpoints?.length) summaryLines.push('API surface: ' + deep.apiEndpoints.length + ' routes');
+  if (deep.databaseSchema?.tables?.length) summaryLines.push('database: ' + deep.databaseSchema.tables.length + ' tables');
+  if (deep.serviceLayer?.length) summaryLines.push('services: ' + deep.serviceLayer.length + ' classes');
+  if (deep.eventSystem?.events?.length) summaryLines.push('events: ' + deep.eventSystem.events.length);
   md += summaryLines.join(' · ') + '.\n\n';
 
-  // Repository Identity and Scope
-  md += `## repository identity and scope\n\n`;
-  md += `| aspect | value |\n|---|---|\n`;
-  md += `| project name | ${result.overview?.name || projectName} |\n`;
-  md += `| project type | ${result.overview?.type || 'unknown'} |\n`;
-  if (result.stack?.languages?.length) md += `| languages | ${result.stack.languages.join(', ')} |\n`;
-  if (result.stack?.frameworks?.length) md += `| frameworks | ${result.stack.frameworks.join(', ')} |\n`;
-  md += `| scan boundary | full recursive scan of ${target} |\n`;
-  md += `| confidence | static analysis only — runtime behavior inferred\n\n`;
+  // 2. Repository Identity and Scope
+  md += `## 2. Repository Identity and Scope\n\n`;
+  md += '| aspect | value |\n|---|---|\n';
+  md += '| project name | ' + (result.overview?.name || projectName) + ' |\n';
+  md += '| project type | ' + (result.overview?.type || 'unknown') + ' |\n';
+  if (result.stack?.languages?.length) md += '| languages | ' + result.stack.languages.join(', ') + ' |\n';
+  if (result.stack?.frameworks?.length) md += '| frameworks | ' + result.stack.frameworks.join(', ') + ' |\n';
+  md += '| scan boundary | full recursive scan |\n';
+  md += '| confidence | static analysis only |\n\n';
 
-  // Top-Level Structure
-  md += `## top-level structure\n\n`;
+  // 3. Top-Level System Map
+  md += `## 3. Top-Level System Map\n\n`;
   if (result.structure) {
-    const lines = result.structure.split('\n').slice(0, 40);
-    md += '```\n' + lines.join('\n') + '\n```\n\n';
-    md += '*fact: directory structure from filesystem walk*\n\n';
+    md += '```\n' + result.structure.split('\n').slice(0, 35).join('\n') + '\n```\n\n';
   }
 
-  // Runtime Entrypoints
-  md += `## runtime entrypoints\n\n`;
-  if (deep.apiEndpoints?.length) md += `- HTTP API: ${deep.apiEndpoints.length} routes registered\n`;
-  if (deep.keyFiles?.controllers?.length) md += `- Controllers: ${deep.keyFiles.controllers.length} controller classes\n`;
-  const cmdDir = path.join(target, 'app', 'Console', 'Commands');
-  if (fs.existsSync(cmdDir)) {
-    try {
-      const cmds = scanDirRecursive(cmdDir, '', 3).filter(f => f.endsWith('.php')).length;
-      if (cmds) md += `- CLI Commands: ${cmds} Artisan commands\n`;
-    } catch {}
-  }
-  const jobsDir = path.join(target, 'app', 'Jobs');
-  if (fs.existsSync(jobsDir)) {
-    try {
-      const jobs = scanDirRecursive(jobsDir, '', 3).filter(f => f.endsWith('.php')).length;
-      if (jobs) md += `- Queue Jobs: ${jobs} job classes\n`;
-    } catch {}
-  }
+  // 4. Runtime Entrypoints
+  md += `## 4. Runtime Entrypoints\n\n`;
+  if (deep.apiEndpoints?.length) md += '- HTTP API: ' + deep.apiEndpoints.length + ' routes\n';
+  if (deep.keyFiles?.controllers?.length) md += '- Controllers: ' + deep.keyFiles.controllers.length + ' classes\n';
   md += '\n';
 
-  // API and Interface Surface
-  md += `## api and interface surface\n\n`;
+  // 5. API/Interface Surface
+  md += `## 5. API/Interface Surface\n\n`;
   if (deep.apiEndpoints?.length) {
-    md += `### HTTP Routes (${deep.apiEndpoints.length} total)\n\n`;
+    md += '### HTTP Routes (' + deep.apiEndpoints.length + ')\n\n';
     md += '| method | path | controller | evidence |\n|---|---|---|---|\n';
-    deep.apiEndpoints.slice(0, 80).forEach(ep => {
-      const ctrl = ep.controller ? ep.controller + (ep.action ? '@' + ep.action : '') : (ep.action || '-');
-      const evidence = ep.middleware ? 'middleware: ' + ep.middleware : 'fact: route definition found';
-      md += `| ${ep.method} | ${ep.path} | ${ctrl} | ${evidence} |\n`;
+    deep.apiEndpoints.slice(0, 50).forEach(function(ep) {
+      var ctrl = ep.controller ? ep.controller + (ep.action ? '@' + ep.action : '') : (ep.action || '-');
+      var evidence = ep.middleware ? 'middleware: ' + ep.middleware : 'fact: route found';
+      md += '| ' + ep.method + ' | ' + ep.path + ' | ' + ctrl + ' | ' + evidence + ' |\n';
     });
-    if (deep.apiEndpoints.length > 80) md += '\n*weak inference: ' + (deep.apiEndpoints.length - 80) + ' more routes omitted*\n';
     md += '\n';
-  }
-  if (deep.keyFiles?.controllers?.length) {
-    md += `### Controllers (${deep.keyFiles.controllers.length})\n\n`;
-    md += '| controller | file |\n|---|---|\n';
-    deep.keyFiles.controllers.slice(0, 30).forEach(c => md += `| ${c.class || '-'} | ${c.file || '-'} |\n`);
-    md += '\n';
+  } else {
+    md += '*not resolved from static analysis*\n\n';
   }
 
-  // Database and Persistence Model
-  md += `## database and persistence model\n\n`;
-  const dbTables = Array.isArray(deep.databaseSchema) ? deep.databaseSchema : (deep.databaseSchema?.tables || []);
+  // 6. Database and Persistence Model
+  md += `## 6. Database and Persistence Model\n\n`;
+  var dbTables = Array.isArray(deep.databaseSchema) ? deep.databaseSchema : (deep.databaseSchema?.tables || []);
   if (dbTables.length) {
-    md += `### Tables (${dbTables.length})\n\n`;
+    md += '### Tables (' + dbTables.length + ')\n\n';
     md += '| table | evidence |\n|---|---|\n';
-    dbTables.slice(0, 50).forEach(t => md += `| ${t.name || t} | fact: migration found |\n`);
-    if (dbTables.length > 50) md += '\n*weak inference: ' + (dbTables.length - 50) + ' more tables omitted*\n';
-    md += '\n';
-  }
-  const dbModels = Array.isArray(deep.databaseSchema?.models) ? deep.databaseSchema.models : [];
-  if (dbModels.length) {
-    md += `### ORM Models (${dbModels.length})\n\n`;
-    md += '| model | table | relationships |\n|---|---|---|\n';
-    dbModels.slice(0, 20).forEach(m => {
-      const rels = m.relationships?.length ? m.relationships.join(', ') : '-';
-      md += `| ${m.class || '-'} | ${m.table || '-'} | ${rels} |\n`;
+    dbTables.slice(0, 35).forEach(function(t) {
+      md += '| ' + (t.name || t) + ' | fact: migration found |\n';
     });
     md += '\n';
+  } else {
+    md += '*not resolved from static analysis*\n\n';
   }
 
-  // Auth, Permissions, and Tenancy
-  md += `## auth, permissions, and tenancy\n\n`;
+  // 7. Domain Models and Relationships
+  md += `## 7. Domain Models and Relationships\n\n`;
+  var dbModels = Array.isArray(deep.databaseSchema?.models) ? deep.databaseSchema.models : [];
+  if (dbModels.length) {
+    md += '### ORM Models (' + dbModels.length + ')\n\n';
+    md += '| model | table | relationships |\n|---|---|---|\n';
+    dbModels.slice(0, 20).forEach(function(m) {
+      var rels = m.relationships?.length ? m.relationships.join(', ') : '-';
+      md += '| ' + (m.class || '-') + ' | ' + (m.table || '-') + ' | ' + rels + ' |\n';
+    });
+    md += '\n';
+  } else {
+    md += '*not resolved from static analysis*\n\n';
+  }
+
+  // 8. Services and Business Logic
+  md += `## 8. Services and Business Logic\n\n`;
+  if (deep.serviceLayer?.length) {
+    md += '### Service Classes (' + deep.serviceLayer.length + ')\n\n';
+    deep.serviceLayer.slice(0, 18).forEach(function(s) {
+      var methods = s.methods ? s.methods.join(', ') : 'unknown';
+      md += '- **' + s.class + '**: ' + methods + '\n';
+    });
+    md += '\n';
+  } else {
+    md += '*not resolved from static analysis*\n\n';
+  }
+
+  // 9. Jobs, Events, Listeners, Observers
+  md += `## 9. Jobs, Events, Listeners, Observers\n\n`;
+  var hasEvents = deep.eventSystem?.events?.length;
+  var hasListeners = deep.eventSystem?.listeners?.length;
+  var hasJobs = deep.dataFlow?.jobs?.length;
+  
+  if (hasEvents || hasListeners || hasJobs) {
+    if (hasEvents) {
+      md += '### Events (' + deep.eventSystem.events.length + ')\n\n';
+      deep.eventSystem.events.slice(0, 8).forEach(function(e) { md += '- ' + (e.name || e) + '\n'; });
+      md += '\n';
+    }
+    if (hasListeners) {
+      md += '### Listeners (' + deep.eventSystem.listeners.length + ')\n\n';
+      deep.eventSystem.listeners.slice(0, 8).forEach(function(l) { md += '- ' + l.name + ': handles ' + (l.handles || 'unknown') + '\n'; });
+      md += '\n';
+    }
+    if (hasJobs) {
+      md += '### Queue Jobs\n\n';
+      deep.dataFlow.jobs.slice(0, 6).forEach(function(j) { md += '- ' + j.name + '\n'; });
+      md += '\n';
+    }
+  } else {
+    md += '*not resolved from static analysis*\n\n';
+  }
+
+  // 10. Auth, Permissions, Tenancy
+  md += `## 10. Auth, Permissions, Tenancy\n\n`;
   if (deep.auth?.guards?.length) {
-    md += '### Authentication Guards\n\n';
-    deep.auth.guards.forEach(g => md += `- fact: guard '${g.name || g}' driver '${g.driver || 'default'}'\n`);
+    deep.auth.guards.forEach(function(g) { md += '- fact: guard ' + (g.name || g) + ' driver ' + (g.driver || 'default') + '\n'; });
     md += '\n';
   }
   if (deep.auth?.providers?.length) {
-    md += '### User Providers\n\n';
-    deep.auth.providers.forEach(p => md += `- fact: provider '${p.name || p}' driver '${p.driver || 'default'}'\n`);
+    deep.auth.providers.forEach(function(p) { md += '- fact: provider ' + (p.name || p) + ' driver ' + (p.driver || 'default') + '\n'; });
     md += '\n';
   }
-  if (deep.auth?.middleware?.length) {
-    md += '### Auth Middleware\n\n';
-    deep.auth.middleware.forEach(m => md += `- fact: middleware '${m}' registered\n`);
-    md += '\n';
-  }
-  const envContent = readFileSafe(path.join(target, '.env'), 5000) || '';
-  if (envContent.includes('TENANT') || envContent.includes('MULTI_TENANT')) {
-    md += '- strong inference: multi-tenancy detected from .env\n';
-  }
-  if (!deep.auth) md += '*weak inference: no explicit auth config — may use Laravel default*\n\n';
+  if (!deep.auth) md += '*not resolved from static analysis*\n\n';
 
-  // Services, Jobs, Events, and Automation
-  md += `## services, jobs, events, and automation\n\n`;
-  if (deep.serviceLayer?.length) {
-    md += `### Services (${deep.serviceLayer.length})\n\n`;
-    deep.serviceLayer.slice(0, 15).forEach(s => {
-      const methods = s.methods ? s.methods.join(', ') : 'unknown';
-      md += `- ${s.class}: ${methods}\n`;
-    });
-    md += '\n';
-  }
-  if (deep.eventSystem?.events?.length) {
-    md += `### Events (${deep.eventSystem.events.length})\n\n`;
-    deep.eventSystem.events.slice(0, 12).forEach(e => md += `- ${e.name || e}\n`);
-    md += '\n';
-  }
-  if (deep.eventSystem?.listeners?.length) {
-    md += `### Listeners (${deep.eventSystem.listeners.length})\n\n`;
-    deep.eventSystem.listeners.slice(0, 12).forEach(l => md += `- ${l.name}: handles ${l.handles || 'unknown'}\n`);
-    md += '\n';
-  }
-  if (deep.dataFlow?.jobs?.length) {
-    md += `### Queue Jobs\n\n`;
-    deep.dataFlow.jobs.slice(0, 8).forEach(j => md += `- ${j.name}: queue=${j.shouldQueue}, retries=${j.retries}\n`);
-    md += '\n';
-  }
-
-  // Integrations and External Dependencies
-  md += `## integrations and external dependencies\n\n`;
+  // 11. Integrations and External Systems
+  md += `## 11. Integrations and External Systems\n\n`;
   if (deep.integrations?.apis?.length) {
-    md += '### External API Clients\n\n';
-    deep.integrations.apis.slice(0, 8).forEach(a => {
-      const auth = a.hasAuth ? 'fact: auth found' : 'weak inference: internal';
-      md += `- ${a.name}: ${a.endpoints?.slice(0, 2).join(', ') || 'unknown'} — ${auth}\n`;
+    deep.integrations.apis.slice(0, 6).forEach(function(a) {
+      var auth = a.hasAuth ? 'fact: auth found' : 'weak inference';
+      md += '- ' + a.name + ': ' + (a.endpoints?.slice(0, 2).join(', ') || 'unknown') + ' — ' + auth + '\n';
     });
     md += '\n';
   }
   if (deep.integrations?.externalServices?.length) {
-    md += '### External Services\n\n';
-    deep.integrations.externalServices.forEach(e => {
-      if (e.type === 'env' && e.keys?.length) md += `- fact: ${e.keys.join(', ')} in .env\n`;
+    deep.integrations.externalServices.forEach(function(e) {
+      if (e.type === 'env' && e.keys?.length) md += '- fact: ' + e.keys.join(', ') + ' in .env\n';
     });
     md += '\n';
   }
-  if (deep.integrations?.webhooks?.length) {
-    md += '### Webhooks\n\n';
-    deep.integrations.webhooks.slice(0, 5).forEach(w => md += `- ${w.type}: ${w.name || w.file || 'unknown'}\n`);
-    md += '\n';
-  }
-  if (!deep.integrations?.apis?.length && !deep.integrations?.externalServices?.length) {
-    md += '*weak inference: no explicit external integrations detected*\n\n';
-  }
+  if (!deep.integrations?.apis?.length) md += '*not resolved from static analysis*\n\n';
 
-  // Module Boundaries and Dependency Map
-  md += `## module boundaries and dependency map\n\n`;
+  // 12. Module Boundaries and Dependency Map
+  md += `## 12. Module Boundaries and Dependency Map\n\n`;
   if (deep.moduleBoundaries?.modules?.length) {
-    md += '| module | type | files | depends on |\n|---|---|---|---|\n';
-    deep.moduleBoundaries.modules.slice(0, 12).forEach(m => {
-      const deps = m.dependsOn?.length ? m.dependsOn.join(', ') : '-';
-      md += `| ${m.name} | ${m.type || 'module'} | ${m.files || m.phpFiles || 0} | ${deps} |\n`;
+    md += '| module | type | depends on |\n|---|---|---|\n';
+    deep.moduleBoundaries.modules.slice(0, 10).forEach(function(m) {
+      var deps = m.dependsOn?.length ? m.dependsOn.join(', ') : '-';
+      md += '| ' + m.name + ' | ' + (m.type || 'module') + ' | ' + deps + ' |\n';
     });
-    md += '\n*fact: module structure from app/ directory analysis*\n\n';
+    md += '\n';
   } else {
-    md += '*weak inference: no explicit module boundaries detected*\n\n';
+    md += '*not resolved from static analysis*\n\n';
   }
 
-  // Configuration and Environment
-  md += `## configuration and environment\n\n`;
-  if (deep.envVars?.length) {
-    md += '### Key Environment Variables\n\n';
-    md += '| variable | default | evidence |\n|---|---|---|\n';
-    deep.envVars.slice(0, 15).forEach(ev => md += `| ${ev.name} | ${ev.default || '-'} | fact: in .env or config |\n`);
-    md += '\n';
+  // 13. Inferred End-to-End Workflows
+  md += `## 13. Inferred End-to-End Workflows\n\n`;
+  var workflows = [];
+  if (deep.apiEndpoints?.length && deep.serviceLayer?.length) {
+    workflows.push('strong inference: API → controller → service → database flow detected');
   }
-  if (deep.config?.length) {
-    md += '### Config Files\n\n';
-    deep.config.forEach(c => md += `- ${c.file}: ${c.type || 'config'}\n`);
-    md += '\n';
+  if (deep.eventSystem?.events?.length && deep.eventSystem?.listeners?.length) {
+    workflows.push('strong inference: event-driven async flow detected');
   }
-
-  // Architecture Observations
-  md += `## architecture observations\n\n`;
-  if (deep.architecture?.patterns?.length) {
-    deep.architecture.patterns.forEach(p => md += `- ${p.pattern}: ${p.evidence || 'detected'} — strong inference\n`);
+  if (deep.integrations?.apis?.length) {
+    workflows.push('strong inference: external integration flow detected');
   }
-  if (result.metrics?.totalFiles > 2000) {
-    md += `- strong inference: large codebase (${result.metrics.totalFiles} files) suggests enterprise/SaaS\n`;
+  if (deep.dataFlow?.jobs?.length) {
+    workflows.push('strong inference: background job flow detected');
   }
-  if (deep.codeQuality?.smells?.length) {
-    md += `- strong inference: ${deep.codeQuality.smells.length} code quality issues detected\n`;
+  if (workflows.length) {
+    workflows.forEach(function(w) { md += '- ' + w + '\n'; });
+  } else {
+    md += '*weak inference: no clear workflows detected*\n';
   }
   md += '\n';
 
-  // Unknowns and Confidence Boundaries
-  md += `## unknowns and confidence boundaries\n\n`;
-  md += '- Runtime behavior: weak inference from code patterns, not verified\n';
-  md += '- API contracts: weak inference from routes, actual format unknown\n';
+  // 14. Risks, Unknowns, and Confidence Boundaries
+  md += `## 14. Risks, Unknowns, and Confidence Boundaries\n\n`;
+  md += '- Runtime behavior: weak inference, not verified\n';
+  md += '- API contracts: weak inference, actual format unknown\n';
   md += '- Data flows: weak inference, no runtime verification\n';
-  md += '- External integrations: strong inference from code, live status unknown\n';
-  md += '- Performance: weak inference, no benchmarking\n';
-  md += '- Security: weak inference from config, no penetration testing\n\n';
+  md += '- External integrations: strong inference, live status unknown\n';
+  md += '- Security: weak inference, no penetration testing\n\n';
 
-  // Appendices
-  md += `## appendices\n\n`;
+  // 15. Appendices
+  md += `## 15. Appendices\n\n`;
 
-  // Appendix A: Routes
   if (deep.apiEndpoints?.length) {
-    md += `### A. Full Route Inventory (${deep.apiEndpoints.length})\n\n`;
+    md += '### A. Full Route Inventory (' + deep.apiEndpoints.length + ')\n\n';
     md += '| method | path | controller@method |\n|---|---|---|\n';
-    deep.apiEndpoints.forEach(ep => {
-      const ctrl = ep.controller ? ep.controller + (ep.action ? '@' + ep.action : '') : (ep.action || '-');
-      md += `| ${ep.method} | ${ep.path} | ${ctrl} |\n`;
+    deep.apiEndpoints.forEach(function(ep) {
+      var ctrl = ep.controller ? ep.controller + (ep.action ? '@' + ep.action : '') : (ep.action || '-');
+      md += '| ' + ep.method + ' | ' + ep.path + ' | ' + ctrl + ' |\n';
     });
     md += '\n';
   }
 
-  // Appendix B: Tables
   if (dbTables.length) {
-    md += `### B. Full Table Inventory (${dbTables.length})\n\n`;
-    dbTables.forEach((t, i) => md += `${i + 1}. \`${t.name || t}\`\n`);
+    md += '### B. Full Table Inventory (' + dbTables.length + ')\n\n';
+    dbTables.forEach(function(t, i) { md += (i + 1) + '. `' + (t.name || t) + '`\n'; });
     md += '\n';
   }
 
-  // Appendix C: Services
   if (deep.serviceLayer?.length) {
-    md += `### C. Full Service Inventory (${deep.serviceLayer.length})\n\n`;
-    deep.serviceLayer.forEach(s => md += `- ${s.class}: ${s.file}\n`);
+    md += '### C. Full Service Inventory (' + deep.serviceLayer.length + ')\n\n';
+    deep.serviceLayer.forEach(function(s) { md += '- ' + s.class + ': ' + s.file + '\n'; });
     md += '\n';
   }
 
-  // Appendix D: Events-Listeners
-  if (deep.eventSystem?.eventListenerMap && Object.keys(deep.eventSystem.eventListenerMap).length) {
-    md += '### D. Event-Listener Map\n\n';
-    Object.entries(deep.eventSystem.eventListenerMap).forEach(([event, listeners]) => {
-      md += `- ${event} → ${listeners.join(', ')}\n`;
-    });
-    md += '\n';
-  }
-
-  md += '---\n\n*Generated by Codebase Scanner v3.0.0 — system understanding approach*\n';
+  md += '---\n\n*Generated by Repo Reverse Engineer v1.0.0*\n';
 
   return md;
 }
