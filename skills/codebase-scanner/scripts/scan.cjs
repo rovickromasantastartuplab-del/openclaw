@@ -372,6 +372,12 @@ function analyzeProject(root, entries, opts) {
     result.deep.config = deepConfig(root);
     result.deep.serviceLayer = deepServiceLayer(root);
     result.deep.moduleBoundaries = deepModuleBoundaries(root, entries);
+    result.deep.businessLogic = deepBusinessLogic(root);
+    result.deep.dataFlow = deepDataFlow(root);
+    result.deep.integrations = deepIntegrations(root);
+    result.deep.performance = deepPerformance(root);
+    result.deep.codeQuality = deepCodeQuality(root);
+    result.deep.deployment = deepDeployment(root);
   }
 
   return result;
@@ -1893,6 +1899,456 @@ function deepModuleBoundaries(root, entries) {
   return { modules, dependedOnBy: connectionMap };
 }
 
+// ─── 11. Business Logic ─────────────────────────────────────────────────────
+
+function deepBusinessLogic(root) {
+  const rules = [];
+  const validators = [];
+  const services = [];
+
+  // Laravel Validation Rules (app/Rules)
+  const rulesDir = path.join(root, 'app', 'Rules');
+  if (fs.existsSync(rulesDir)) {
+    const ruleFiles = scanDirRecursive(rulesDir, '', 3).filter(f => f.endsWith('.php'));
+    for (const fp of ruleFiles) {
+      const content = readFileSafe(fp, 15000);
+      const name = path.basename(fp, '.php');
+      const implMatch = content.match(/implements\s+Rule/i) ? 'Rule' : '';
+      const methods = content.match(/(function\s+\w+)/g)?.map(m => m.replace('function ', '')) || [];
+      rules.push({ name, file: fp.replace(root, ''), implements: implMatch, methods: methods.slice(0, 5) });
+    }
+  }
+
+  // Laravel Form Requests (app/Http/Requests)
+  const requestsDir = path.join(root, 'app', 'Http', 'Requests');
+  if (fs.existsSync(requestsDir)) {
+    const reqFiles = scanDirRecursive(requestsDir, '', 3).filter(f => f.endsWith('.php'));
+    for (const fp of reqFiles) {
+      const content = readFileSafe(fp, 20000);
+      const name = path.basename(fp, '.php');
+      const authorize = content.includes('return true') || content.includes('$this->user()');
+      const rulesMethod = content.includes('function rules');
+      const messagesMethod = content.includes('function messages');
+      validators.push({ name, file: fp.replace(root, ''), authorize, rules: rulesMethod, messages: messagesMethod });
+    }
+  }
+
+  // Domain Services (app/Services that contain business logic)
+  const servicesDir = path.join(root, 'app', 'Services');
+  if (fs.existsSync(servicesDir)) {
+    const serviceFiles = scanDirRecursive(servicesDir, '', 4).filter(f => f.endsWith('.php'));
+    for (const fp of serviceFiles) {
+      const content = readFileSafe(fp, 25000);
+      const name = path.basename(fp, '.php');
+      const methods = content.match(/(function\s+\w+)/g)?.map(m => m.replace('function ', '')) || [];
+      const hasLogic = /if|foreach|switch|try|catch/.test(content);
+      const docblock = content.match(/\/\*\*[\s\S]*?\*\//)?.[0] || '';
+      services.push({ name, file: fp.replace(root, ''), methods: methods.slice(0, 8), hasLogic, docblock: docblock.substring(0, 200) });
+    }
+  }
+
+  // Model Accessors/Mutators (business logic in models)
+  const modelsDir = path.join(root, 'app', 'Models');
+  const modelAccessors = [];
+  if (fs.existsSync(modelsDir)) {
+    const modelFiles = scanDirRecursive(modelsDir, '', 4).filter(f => f.endsWith('.php'));
+    for (const fp of modelFiles) {
+      const content = readFileSafe(fp, 30000);
+      const name = path.basename(fp, '.php');
+      const accessors = content.match(/function get(\w+)Attribute/g)?.map(a => a.replace('function get', '').replace('Attribute', '')) || [];
+      const mutators = content.match(/function set(\w+)Attribute/g)?.map(m => m.replace('function set', '').replace('Attribute', '')) || [];
+      const scopes = content.match(/function scope(\w+)/g)?.map(s => s.replace('function scope', '')) || [];
+      if (accessors.length || mutators.length || scopes.length) {
+        modelAccessors.push({ name, file: fp.replace(root, ''), accessors, mutators, scopes });
+      }
+    }
+  }
+
+  // Business Rules in Controllers (complex logic in controllers)
+  const httpDir = path.join(root, 'app', 'Http', 'Controllers');
+  const controllerLogic = [];
+  if (fs.existsSync(httpDir)) {
+    const ctrlFiles = scanDirRecursive(httpDir, '', 5).filter(f => f.endsWith('.php'));
+    for (const fp of ctrlFiles) {
+      const content = readFileSafe(fp, 30000);
+      const name = path.basename(fp, '.php');
+      const methods = content.match(/(public\s+function\s+\w+)/g)?.map(m => m.replace('public function ', '')) || [];
+      const complexity = (content.match(/if|foreach|switch|while|try|catch/g) || []).length;
+      if (complexity > 10) {
+        controllerLogic.push({ name, file: fp.replace(root, ''), methods: methods.slice(0, 6), complexity });
+      }
+    }
+  }
+
+  return { rules, validators, services, modelAccessors, controllerLogic };
+}
+
+// ─── 12. Data Flow ───────────────────────────────────────────────────────
+
+function deepDataFlow(root) {
+  const caches = [];
+  const queues = [];
+  const jobs = [];
+  const middlewares = [];
+
+  // Laravel Cache (app/Cache and config/cache.php)
+  const cacheConfig = path.join(root, 'config', 'cache.php');
+  if (fs.existsSync(cacheConfig)) {
+    const content = readFileSafe(cacheConfig, 15000);
+    const stores = content.match(/'([a-z]+)'\s*=>\s*\[/g)?.map(s => s.replace(/['\[\]=>/]/g, '').trim()) || [];
+    const driver = content.match(/'driver'\s*=>\s*'([^']+)'/)?.[1] || 'file';
+    caches.push({ type: 'config', stores, driver, file: '/config/cache.php' });
+  }
+
+  // Cache tags usage
+  const cacheDir = path.join(root, 'app', 'Cache');
+  if (fs.existsSync(cacheDir)) {
+    const cacheFiles = scanDirRecursive(cacheDir, '', 3).filter(f => f.endsWith('.php'));
+    for (const fp of cacheFiles) {
+      const content = readFileSafe(fp, 10000);
+      caches.push({ type: 'class', name: path.basename(fp, '.php'), file: fp.replace(root, ''), hasTags: content.includes('tags') });
+    }
+  }
+
+  // Laravel Queues (config/queue.php)
+  const queueConfig = path.join(root, 'config', 'queue.php');
+  if (fs.existsSync(queueConfig)) {
+    const content = readFileSafe(queueConfig, 15000);
+    const connections = content.match(/'([a-z]+)'\s*=>\s*\[/g)?.map(c => c.replace(/['\[\]=>/]/g, '').trim()).filter(c => c !== 'connections') || [];
+    const defaultQueue = content.match(/'default'\s*=>\s*'([^']+)'/)?.[1] || 'sync';
+    queues.push({ type: 'config', connections, defaultQueue, file: '/config/queue.php' });
+  }
+
+  // Queue Jobs (app/Jobs)
+  const jobsDir = path.join(root, 'app', 'Jobs');
+  if (fs.existsSync(jobsDir)) {
+    const jobFiles = scanDirRecursive(jobsDir, '', 4).filter(f => f.endsWith('.php'));
+    for (const fp of jobFiles) {
+      const content = readFileSafe(fp, 20000);
+      const name = path.basename(fp, '.php');
+      const implList = content.match(/implements\s+(\w+)/g)?.map(i => i.replace('implements ', '')) || [];
+      const shouldQueue = content.includes('ShouldQueue');
+      const unique = content.includes('ShouldBeUnique');
+      const retries = content.match(/\$tries\s*=\s*(\d+)/)?.[1] || '3';
+      const timeout = content.match(/\$timeout\s*=\s*(\d+)/)?.[1] || null;
+      const dispatch = content.match(/dispatch\s*\(\s*new\s+(\w+)/g)?.map(d => d.replace(/dispatch\s*\(\s*new\s+/, '')) || [];
+      jobs.push({ name, file: fp.replace(root, ''), implements: implList, shouldQueue, unique, retries, timeout, dispatches: dispatch.slice(0, 3) });
+    }
+  }
+
+  // Async Jobs (chunks, batches)
+  const batchJobs = [];
+  const chunkJobs = [];
+  const entries = scanDirRecursive(root, '', 5);
+  for (const fp of entries) {
+    if (!fp.endsWith('.php')) continue;
+    const content = readFileSafe(fp, 20000);
+    if (content.includes('Bus::batch') || content.includes('dispatch(new Batch')) {
+      batchJobs.push({ file: fp.replace(root, ''), hasBatches: true });
+    }
+    if (content.includes('chunk') && content.includes('dispatch')) {
+      chunkJobs.push({ file: fp.replace(root, ''), hasChunkDispatch: true });
+    }
+  }
+
+  // Middleware (HTTP kernel)
+  const kernelFile = path.join(root, 'app', 'Http', 'Kernel.php');
+  if (fs.existsSync(kernelFile)) {
+    const content = readFileSafe(kernelFile, 15000);
+    const global = content.match(/\$middleware\s*=\s*\[([\s\S]*?)\];/)?.[1]?.match(/'([^']+)'/g)?.map(m => m.replace(/'/g, '')) || [];
+    const api = content.match(/\$middlewareGroups\s*=\s*\[([\s\S]*?'api'[\s\S]*?)\]/)?.[0]?.match(/'([^']+)'/g)?.map(m => m.replace(/'/g, '')) || [];
+    const web = content.match(/\$middlewareGroups\s*=\s*\[([\s\S]*?'web'[\s\S]*?)\]/)?.[0]?.match(/'([^']+)'/g)?.map(m => m.replace(/'/g, '')) || [];
+    const routeMiddleware = content.match(/\$middlewareAliases\s*=\s*\[([\s\S]*?)\];/)?.[1]?.match(/'([^']+)'/g)?.map(m => m.replace(/'/g, '')) || [];
+    middlewares.push({ global: global.slice(0, 10), api: api.slice(0, 10), web: web.slice(0, 10), routeMiddleware: routeMiddleware.slice(0, 20) });
+  }
+
+  return { caches, queues, jobs, batchJobs, chunkJobs, middlewares };
+}
+
+// ─── 13. Integrations ─────────────────────────────────────────────────────
+
+function deepIntegrations(root) {
+  const apis = [];
+  const webhooks = [];
+  const externalServices = [];
+
+  // External API Clients (app/Services/*Client or *Service)
+  const servicesDir = path.join(root, 'app', 'Services');
+  if (fs.existsSync(servicesDir)) {
+    const serviceFiles = scanDirRecursive(servicesDir, '', 4).filter(f => f.endsWith('.php'));
+    for (const fp of serviceFiles) {
+      const content = readFileSafe(fp, 25000);
+      const name = path.basename(fp, '.php');
+      // Detect external API calls
+      const httpClient = content.match(/Http::|Guzzle|Client::|axios|fetch\(/g) || [];
+      const apiEndpoints = content.match(/['"]https?:\/\/[^\s'"]+['"]/g)?.map(e => e.replace(/['"]/g, '')) || [];
+      const authHeaders = content.match(/Authorization|Bearer|API_Key|X-API-Key/g) || [];
+      const hasToken = content.includes('$token') || content.includes('$apiKey') || content.includes('$secret');
+      if (httpClient.length || apiEndpoints.length) {
+        apis.push({ name, file: fp.replace(root, ''), httpClient: httpClient.slice(0, 3), endpoints: apiEndpoints.slice(0, 5), hasAuth: !!authHeaders.length, hasToken });
+      }
+    }
+  }
+
+  // Webhook definitions (routes/webhook.php, config/webhooks.php)
+  const webhookRoutes = path.join(root, 'routes', 'webhook.php');
+  if (fs.existsSync(webhookRoutes)) {
+    const content = readFileSafe(webhookRoutes, 10000);
+    const routes = content.match(/Route::\w+\(['"]([^'"]+)['"]/g)?.map(r => r.replace(/Route::\w+\(['"]|['"]/g, '')) || [];
+    webhooks.push({ type: 'routes', file: '/routes/webhook.php', routes });
+  }
+
+  // Webhook Controllers
+  const entries = scanDirRecursive(root, '', 6);
+  for (const fp of entries) {
+    if (!fp.includes('Webhook') || !fp.endsWith('.php')) continue;
+    const content = readFileSafe(fp, 20000);
+    const name = path.basename(fp, '.php');
+    const methods = content.match(/public\s+function\s+(\w+)/g)?.map(m => m.replace('public function ', '')) || [];
+    const rawInput = content.includes('$request->all()') || content.includes('file_get_contents');
+    webhooks.push({ type: 'controller', name, file: fp.replace(root, ''), methods, rawInput });
+  }
+
+  // External service configs (.env keys for external services)
+  const envFile = path.join(root, '.env');
+  const externalKeys = [];
+  if (fs.existsSync(envFile)) {
+    const content = readFileSafe(envFile, 10000);
+    const keyPattern = /^(STRIPE|PAYPAL|TWILIO|SENDGRID|AWS|GOOGLE|FACEBOOK|SLACK|DISCORD|MAILGUN|SNS|SQUARE|RAZORPAY|FLUTTERWAVE)(_|\w*=)/m;
+    const matches = content.match(new RegExp(keyPattern, 'gm')) || [];
+    for (const m of matches) {
+      const key = m.split('=')[0];
+      if (!externalKeys.includes(key)) externalKeys.push(key);
+    }
+  }
+  if (externalKeys.length) {
+    externalServices.push({ type: 'env', keys: externalKeys, source: '.env' });
+  }
+
+  // Laravel Socialite (social auth)
+  const socialiteConfig = path.join(root, 'config', 'services.php');
+  if (fs.existsSync(socialiteConfig)) {
+    const content = readFileSafe(socialiteConfig, 10000);
+    const providers = content.match(/'([a-z]+)'\s*=>\s*\[/g)?.map(p => p.replace(/['\[\]=>/]/g, '').trim()).filter(p => !['services', 'mail'].includes(p)) || [];
+    if (providers.length) {
+      externalServices.push({ type: 'socialite', providers, file: '/config/services.php' });
+    }
+  }
+
+  return { apis, webhooks, externalServices };
+}
+
+// ─── 14. Performance ─────────────────────────────────────────────────────
+
+function deepPerformance(root) {
+  const n1Queries = [];
+  const missingIndexes = [];
+  const slowQueries = [];
+  const eagerLoads = [];
+
+  // N+1 Query Detection (models without with() in controller loops)
+  const modelsDir = path.join(root, 'app', 'Models');
+  if (fs.existsSync(modelsDir)) {
+    const modelFiles = scanDirRecursive(modelsDir, '', 4).filter(f => f.endsWith('.php'));
+    for (const fp of modelFiles) {
+      const content = readFileSafe(fp, 20000);
+      const name = path.basename(fp, '.php');
+      const relationships = content.match(/(function\s+\w+\(\))\s*\{[\s\S]*?return\s+\$this->(hasOne|hasMany|belongsTo|belongsToMany|morphOne|morphMany)/g) || [];
+      if (relationships.length) {
+        const relNames = relationships.map(r => r.match(/function\s+(\w+)/)?.[1]).filter(Boolean);
+        if (relNames.length) {
+          eagerLoads.push({ model: name, file: fp.replace(root, ''), relationships: relNames });
+        }
+      }
+    }
+  }
+
+  // Missing Database Indexes (foreign keys without indexes)
+  const migrationsDir = path.join(root, 'database', 'migrations');
+  const foreignKeys = [];
+  if (fs.existsSync(migrationsDir)) {
+    const migFiles = scanDirRecursive(migrationsDir, '', 2).filter(f => f.endsWith('.php'));
+    for (const fp of migFiles.slice(0, 30)) {
+      const content = readFileSafe(fp, 15000);
+      const fks = content.match(/foreignId\(['"]([^'"]+)['"]\)->/g) || [];
+      const tableName = content.match(/\$table\s*=\s*['"](\w+)['"]/)?.[1] || 'unknown';
+      for (const fk of fks) {
+        const col = fk.match(/foreignId\(['"]([^'"]+)['"]/)?.[1];
+        if (col) foreignKeys.push({ table: tableName, column: col, file: fp.replace(root, '') });
+      }
+    }
+  }
+  if (foreignKeys.length) {
+    missingIndexes.push({ type: 'foreign_keys', count: foreignKeys.length, details: foreignKeys.slice(0, 15) });
+  }
+
+  // Slow Query Patterns (raw queries without limit or where)
+  const entries = scanDirRecursive(root, '', 6);
+  for (const fp of entries) {
+    if (!fp.endsWith('.php')) continue;
+    const content = readFileSafe(fp, 30000);
+    const rawQueries = content.match(/DB::select\(|DB::raw\(|whereRaw\(|joinRaw\(/g) || [];
+    if (rawQueries.length > 5) {
+      const noLimit = content.includes('get()') && !content.includes('limit(') && !content.includes('take(');
+      const noWhere = content.includes('where(') === false;
+      if (noLimit || noWhere) {
+        slowQueries.push({ file: fp.replace(root, ''), rawQueries: rawQueries.length, noLimit, noWhere });
+      }
+    }
+  }
+
+  // Unoptimized Eloquent (all() without limit)
+  const controllerDirs = [path.join(root, 'app', 'Http', 'Controllers'), path.join(root, 'app', 'Http', 'Controllers', 'Api')];
+  for (const ctrlDir of controllerDirs) {
+    if (!fs.existsSync(ctrlDir)) continue;
+    const ctrlFiles = scanDirRecursive(ctrlDir, '', 5).filter(f => f.endsWith('.php'));
+    for (const fp of ctrlFiles) {
+      const content = readFileSafe(fp, 25000);
+      const name = path.basename(fp, '.php');
+      const allCalls = content.match(/\w+::all\(\)/g) || [];
+      if (allCalls.length > 3) {
+        n1Queries.push({ controller: name, file: fp.replace(root, ''), allCalls: allCalls.length, warning: 'multiple all() calls without pagination' });
+      }
+    }
+  }
+
+  return { n1Queries, missingIndexes, slowQueries, eagerLoads };
+}
+
+// ─── 15. Code Quality ─────────────────────────────────────────────────────
+
+function deepCodeQuality(root) {
+  const deadCode = [];
+  const complexity = [];
+  const smells = [];
+
+  // Dead Code Detection (unused methods, unreachable code)
+  const entries = scanDirRecursive(root, '', 5);
+  for (const fp of entries) {
+    if (!fp.endsWith('.php')) continue;
+    const content = readFileSafe(fp, 30000);
+    
+    // Empty methods
+    const emptyMethods = content.match(/function\s+\w+\(\)\s*\{\s*\}/g) || [];
+    if (emptyMethods.length > 2) {
+      deadCode.push({ type: 'empty_methods', file: fp.replace(root, ''), count: emptyMethods.length });
+    }
+
+    // TODO/FIXME comments
+    const todos = content.match(/\/\/\s*(TODO|FIXME|XXX|HACK):?\s*(.*)/g) || [];
+    if (todos.length > 5) {
+      deadCode.push({ type: 'todos', file: fp.replace(root, ''), count: todos.length, samples: todos.slice(0, 3) });
+    }
+
+    // Cyclomatic complexity estimation
+    const complexityScore = (content.match(/if|elseif|switch|case|while|for|foreach|catch|\?\?|\?:|&&|\|\|/g) || []).length;
+    const lineCount = content.split('\n').length;
+    const complexityRatio = complexityScore / Math.max(lineCount, 1);
+    if (complexityRatio > 0.15 && lineCount > 100) {
+      complexity.push({ file: fp.replace(root, ''), lines: lineCount, complexity: complexityScore, ratio: complexityRatio.toFixed(2) });
+    }
+  }
+
+  // Code smells (Laravel anti-patterns)
+  for (const fp of entries.slice(0, 100)) {
+    if (!fp.endsWith('.php')) continue;
+    const content = readFileSafe(fp, 25000);
+
+    // God Objects (controllers with >20 methods)
+    if (fp.includes('Controller') && (content.match(/public\s+function\s+\w+/g) || []).length > 20) {
+      smells.push({ type: 'god_controller', file: fp.replace(root, ''), methods: (content.match(/public\s+function\s+\w+/g) || []).length });
+    }
+
+    // Fat Models (models with >30 methods)
+    if (fp.includes('/Models/') && (content.match(/public\s+function\s+\w+/g) || []).length > 30) {
+      smells.push({ type: 'fat_model', file: fp.replace(root, ''), methods: (content.match(/public\s+function\s+\w+/g) || []).length });
+    }
+
+    // Hardcoded config values
+    const hardcoded = content.match(/['"]https?:\/\/[^\s'"]+['"]/g) || [];
+    if (hardcoded.length > 3) {
+      smells.push({ type: 'hardcoded_urls', file: fp.replace(root, ''), count: hardcoded.length });
+    }
+  }
+
+  return { deadCode, complexity, smells };
+}
+
+// ─── 16. Deployment ─────────────────────────────────────────────────────
+
+function deepDeployment(root) {
+  const docker = [];
+  const ciCd = [];
+  const infra = [];
+
+  // Dockerfiles
+  const dockerfiles = scanDirRecursive(root, '', 2).filter(f => f.includes('Dockerfile') || f.endsWith('.dockerfile'));
+  for (const fp of dockerfiles) {
+    const content = readFileSafe(fp, 10000);
+    const baseImage = content.match(/FROM\s+([^\s]+)/)?.[1] || 'unknown';
+    const hasPhp = content.includes('php');
+    const hasNode = content.includes('node');
+    const hasNginx = content.includes('nginx');
+    docker.push({ file: fp.replace(root, ''), baseImage, hasPhp, hasNode, hasNginx });
+  }
+
+  // docker-compose.yml
+  const composeFiles = scanDirRecursive(root, '', 2).filter(f => f.includes('docker-compose'));
+  for (const fp of composeFiles) {
+    const content = readFileSafe(fp, 15000);
+    const services = content.match(/^\s{2}(\w+):/gm)?.map(s => s.trim()) || [];
+    const hasMysql = content.includes('mysql') || content.includes('mariadb');
+    const hasRedis = content.includes('redis');
+    const hasNginx = content.includes('nginx');
+    docker.push({ file: fp.replace(root, ''), type: 'compose', services: services.slice(0, 10), hasMysql, hasRedis, hasNginx });
+  }
+
+  // CI/CD (GitHub Actions, GitLab CI)
+  const githubWorkflows = path.join(root, '.github', 'workflows');
+  if (fs.existsSync(githubWorkflows)) {
+    const wfFiles = scanDirRecursive(githubWorkflows, '', 2).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
+    for (const fp of wfFiles) {
+      const content = readFileSafe(fp, 10000);
+      const jobs = content.match(/^\s{2}(\w+):/gm)?.map(j => j.trim()) || [];
+      const hasTests = content.includes('test') || content.includes('phpunit');
+      const hasLint = content.includes('php-cs-fixer') || content.includes('pint');
+      ciCd.push({ file: fp.replace(root, ''), type: 'github', jobs: jobs.slice(0, 8), hasTests, hasLint });
+    }
+  }
+
+  const gitlabCi = path.join(root, '.gitlab-ci.yml');
+  if (fs.existsSync(gitlabCi)) {
+    const content = readFileSafe(gitlabCi, 8000);
+    ciCd.push({ file: '/.gitlab-ci.yml', type: 'gitlab', hasContent: content.length > 0 });
+  }
+
+  // Infrastructure (Terraform, Kubernetes)
+  const k8sFiles = scanDirRecursive(root, '', 3).filter(f => f.endsWith('.yml') && (f.includes('deployment') || f.includes('service') || f.includes('ingress')));
+  for (const fp of k8sFiles) {
+    const content = readFileSafe(fp, 5000);
+    const kind = content.match(/kind:\s*(\w+)/)?.[1] || 'unknown';
+    infra.push({ file: fp.replace(root, ''), kind });
+  }
+
+  const tfFiles = scanDirRecursive(root, '', 2).filter(f => f.endsWith('.tf'));
+  for (const fp of tfFiles) {
+    const content = readFileSafe(fp, 8000);
+    const resources = content.match(/resource\s+"([^"]+)"/g)?.map(r => r.replace('resource "', '').replace('"', '')) || [];
+    infra.push({ file: fp.replace(root, ''), type: 'terraform', resources: resources.slice(0, 5) });
+  }
+
+  // Deployment scripts
+  const deployScripts = scanDirRecursive(root, '', 2).filter(f => f.includes('deploy') || f.includes('Dockerfile'));
+  for (const fp of deployScripts) {
+    const content = readFileSafe(fp, 5000);
+    if (content.includes('composer install') || content.includes('npm install') || content.includes('php artisan')) {
+      docker.push({ file: fp.replace(root, ''), type: 'deploy_script', hasDeps: true });
+    }
+  }
+
+  return { docker, ciCd, infra };
+}
+
 // ─── Output Formatting ───────────────────────────────────────────────────────
 
 function formatMarkdown(result, target) {
@@ -2609,6 +3065,254 @@ function generateReportFile(result, target) {
     md += `*(no observations — use --deep flag for deeper analysis)*\n`;
   }
   md += `\n`;
+
+  // Business Logic
+  md += `## Business Logic\n\n`;
+  const bl = deep.businessLogic || {};
+  if (bl.rules?.length) {
+    md += `### Validation Rules\n\n`;
+    md += `| Rule Class | File |\n|---|---|\n`;
+    bl.rules.forEach(r => {
+      md += `| ${r.name} | ${r.file} |\n`;
+    });
+    md += `\n`;
+  }
+  if (bl.validators?.length) {
+    md += `### Form Requests\n\n`;
+    md += `| Request | File | Has Rules |\n|---|---|---|\n`;
+    bl.validators.forEach(v => {
+      md += `| ${v.name} | ${v.file} | ${v.rules ? '✓' : '✗'} |\n`;
+    });
+    md += `\n`;
+  }
+  if (bl.services?.length) {
+    md += `### Domain Services\n\n`;
+    md += `| Service | File | Methods |\n|---|---|---|\n`;
+    bl.services.slice(0, 20).forEach(s => {
+      md += `| ${s.name} | ${s.file} | ${(s.methods || []).join(', ')} |\n`;
+    });
+    md += `\n`;
+  }
+  if (bl.modelAccessors?.length) {
+    md += `### Model Accessors/Mutators/Scopes\n\n`;
+    md += `| Model | Accessors | Mutators | Scopes |\n|---|---|---|---|\n`;
+    bl.modelAccessors.slice(0, 15).forEach(m => {
+      md += `| ${m.name} | ${(m.accessors || []).join(', ')} | ${(m.mutators || []).join(', ')} | ${(m.scopes || []).join(', ')} |\n`;
+    });
+    md += `\n`;
+  }
+  if (bl.controllerLogic?.length) {
+    md += `### Complex Controllers (>10 conditionals)\n\n`;
+    md += `| Controller | File | Complexity |\n|---|---|---|\n`;
+    bl.controllerLogic.forEach(c => {
+      md += `| ${c.name} | ${c.file} | ${c.complexity} |\n`;
+    });
+    md += `\n`;
+  }
+  if (!bl.rules?.length && !bl.validators?.length && !bl.services?.length && !bl.modelAccessors?.length && !bl.controllerLogic?.length) {
+    md += `*(no business logic detected — use --deep flag)*\n\n`;
+  }
+
+  // Data Flow
+  md += `## Data Flow\n\n`;
+  const df = deep.dataFlow || {};
+  if (df.caches?.length) {
+    md += `### Cache Configuration\n\n`;
+    df.caches.forEach(c => {
+      if (c.type === 'config') {
+        md += `- **Stores:** ${(c.stores || []).join(', ') || 'default'}\n`;
+        md += `- **Driver:** ${c.driver}\n`;
+      } else {
+        md += `- ${c.name} (${c.file})\n`;
+      }
+    });
+    md += `\n`;
+  }
+  if (df.queues?.length) {
+    md += `### Queue Configuration\n\n`;
+    df.queues.forEach(q => {
+      if (q.type === 'config') {
+        md += `- **Connections:** ${(q.connections || []).join(', ') || 'sync'}\n`;
+        md += `- **Default:** ${q.defaultQueue}\n`;
+      }
+    });
+    md += `\n`;
+  }
+  if (df.jobs?.length) {
+    md += `### Queue Jobs\n\n`;
+    md += `| Job | File | ShouldQueue | Retries |\n|---|---|---|---|\n`;
+    df.jobs.slice(0, 20).forEach(j => {
+      md += `| ${j.name} | ${j.file} | ${j.shouldQueue ? '✓' : '✗'} | ${j.retries} |\n`;
+    });
+    md += `\n`;
+  }
+  if (df.batchJobs?.length) {
+    md += `### Batch Jobs\n\n`;
+    df.batchJobs.forEach(b => {
+      md += `- ${b.file}\n`;
+    });
+    md += `\n`;
+  }
+  if (df.middlewares?.length) {
+    md += `### Middleware\n\n`;
+    const m = df.middlewares[0];
+    if (m.global?.length) md += `**Global:** ${m.global.join(', ')}\n`;
+    if (m.web?.length) md += `**Web:** ${m.web.join(', ')}\n`;
+    if (m.api?.length) md += `**API:** ${m.api.join(', ')}\n`;
+    if (m.routeMiddleware?.length) md += `**Route:** ${m.routeMiddleware.join(', ')}\n`;
+    md += `\n`;
+  }
+  if (!df.caches?.length && !df.queues?.length && !df.jobs?.length && !df.middlewares?.length) {
+    md += `*(no data flow patterns detected — use --deep flag)*\n\n`;
+  }
+
+  // Integrations
+  md += `## Integrations\n\n`;
+  const integ = deep.integrations || {};
+  if (integ.apis?.length) {
+    md += `### External API Clients\n\n`;
+    md += `| Service | File | Has Auth | Endpoints |\n|---|---|---|---|\n`;
+    integ.apis.slice(0, 15).forEach(a => {
+      md += `| ${a.name} | ${a.file} | ${a.hasAuth ? '✓' : '✗'} | ${(a.endpoints || []).slice(0, 2).join(', ')} |\n`;
+    });
+    md += `\n`;
+  }
+  if (integ.webhooks?.length) {
+    md += `### Webhooks\n\n`;
+    integ.webhooks.forEach(w => {
+      if (w.type === 'routes') {
+        md += `**Routes:** ${(w.routes || []).join(', ')}\n`;
+      } else {
+        md += `- ${w.name} (${w.file}) - methods: ${(w.methods || []).join(', ')}\n`;
+      }
+    });
+    md += `\n`;
+  }
+  if (integ.externalServices?.length) {
+    md += `### External Services (from .env)\n\n`;
+    integ.externalServices.forEach(e => {
+      if (e.type === 'env') {
+        md += `**Configured:** ${e.keys.join(', ')}\n`;
+      } else if (e.type === 'socialite') {
+        md += `**Socialite:** ${e.providers.join(', ')}\n`;
+      }
+    });
+    md += `\n`;
+  }
+  if (!integ.apis?.length && !integ.webhooks?.length && !integ.externalServices?.length) {
+    md += `*(no integrations detected — use --deep flag)*\n\n`;
+  }
+
+  // Performance
+  md += `## Performance Analysis\n\n`;
+  const perf = deep.performance || {};
+  if (perf.eagerLoads?.length) {
+    md += `### Eloquent Relationships (for eager loading)\n\n`;
+    md += `| Model | Relationships |\n|---|---|\n`;
+    perf.eagerLoads.forEach(e => {
+      md += `| ${e.model} | ${e.relationships.join(', ')} |\n`;
+    });
+    md += `\n`;
+  }
+  if (perf.n1Queries?.length) {
+    md += `### Potential N+1 Queries (all() without limit)\n\n`;
+    md += `| Controller | File | all() Calls |\n|---|---|---|\n`;
+    perf.n1Queries.slice(0, 10).forEach(n => {
+      md += `| ${n.controller} | ${n.file} | ${n.allCalls} |\n`;
+    });
+    md += `\n`;
+  }
+  if (perf.missingIndexes?.length) {
+    md += `### Missing Indexes (foreign keys)\n\n`;
+    perf.missingIndexes.forEach(m => {
+      md += `- ${m.type}: ${m.count} columns\n`;
+      m.details?.forEach(d => {
+        md += `  - ${d.table}.${d.column}\n`;
+      });
+    });
+    md += `\n`;
+  }
+  if (perf.slowQueries?.length) {
+    md += `### Unoptimized Raw Queries\n\n`;
+    perf.slowQueries.slice(0, 10).forEach(s => {
+      md += `- ${s.file} — ${s.rawQueries} raw queries${s.noLimit ? ' (no LIMIT)' : ''}\n`;
+    });
+    md += `\n`;
+  }
+  if (!perf.eagerLoads?.length && !perf.n1Queries?.length && !perf.missingIndexes?.length && !perf.slowQueries?.length) {
+    md += `*(no performance issues detected — use --deep flag)*\n\n`;
+  }
+
+  // Code Quality
+  md += `## Code Quality\n\n`;
+  const cq = deep.codeQuality || {};
+  if (cq.deadCode?.length) {
+    md += `### Dead Code\n\n`;
+    cq.deadCode.forEach(d => {
+      md += `- **${d.type}**: ${d.file} (${d.count} instances)\n`;
+    });
+    md += `\n`;
+  }
+  if (cq.complexity?.length) {
+    md += `### High Complexity Files (>15% branching)\n\n`;
+    md += `| File | Lines | Complexity Score |\n|---|---|---|\n`;
+    cq.complexity.slice(0, 15).forEach(c => {
+      md += `| ${c.file} | ${c.lines} | ${c.complexity} |\n`;
+    });
+    md += `\n`;
+  }
+  if (cq.smells?.length) {
+    md += `### Code Smells\n\n`;
+    cq.smells.slice(0, 15).forEach(s => {
+      md += `- **${s.type}**: ${s.file}${s.methods ? ` (${s.methods} methods)` : ''}\n`;
+    });
+    md += `\n`;
+  }
+  if (!cq.deadCode?.length && !cq.complexity?.length && !cq.smells?.length) {
+    md += `*(no code quality issues detected — use --deep flag)*\n\n`;
+  }
+
+  // Deployment
+  md += `## Deployment\n\n`;
+  const dep = deep.deployment || {};
+  if (dep.docker?.length) {
+    md += `### Docker\n\n`;
+    dep.docker.forEach(d => {
+      if (d.baseImage) {
+        md += `- **${d.file}**: FROM ${d.baseImage}\n`;
+      } else if (d.type === 'compose') {
+        md += `- **${d.file}**: ${(d.services || []).join(', ')}\n`;
+      } else {
+        md += `- ${d.file}\n`;
+      }
+    });
+    md += `\n`;
+  }
+  if (dep.ciCd?.length) {
+    md += `### CI/CD\n\n`;
+    dep.ciCd.forEach(c => {
+      if (c.type === 'github') {
+        md += `- **${c.file}**: ${(c.jobs || []).join(', ')} | tests: ${c.hasTests ? '✓' : '✗'} | lint: ${c.hasLint ? '✓' : '✗'}\n`;
+      } else {
+        md += `- ${c.file} (${c.type})\n`;
+      }
+    });
+    md += `\n`;
+  }
+  if (dep.infra?.length) {
+    md += `### Infrastructure\n\n`;
+    dep.infra.forEach(i => {
+      if (i.kind) {
+        md += `- ${i.file}: ${i.kind}\n`;
+      } else if (i.resources?.length) {
+        md += `- ${i.file}: ${i.resources.join(', ')}\n`;
+      }
+    });
+    md += `\n`;
+  }
+  if (!dep.docker?.length && !dep.ciCd?.length && !dep.infra?.length) {
+    md += `*(no deployment config detected — use --deep flag)*\n\n`;
+  }
 
   md += `---\n\n*Generated by Codebase Scanner v2.0.0*\n`;
 
