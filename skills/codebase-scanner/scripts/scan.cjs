@@ -2846,6 +2846,15 @@ function main() {
       const savePath = path.join(saveDir, fileName);
       fs.writeFileSync(savePath, reportMd, 'utf-8');
       console.error(`\n📄 Report saved to: ${savePath}`);
+
+      // Copy to workspace and send to Discord
+      try {
+        const workspacePath = '/root/.openclaw/workspace/' + fileName;
+        fs.writeFileSync(workspacePath, reportMd, 'utf-8');
+        console.error(`📤 Copied to workspace: ${workspacePath}`);
+      } catch (copyErr) {
+        // ignore copy errors
+      }
     } catch (err) {
       console.error(`\n⚠️ Could not save report: ${err.message}`);
     }

@@ -511,6 +511,7 @@ After every scan, automatically save the full report as a downloadable `.md` fil
 2. **Save location:** project root directory. If a `/reports` folder exists in the project, save there instead.
 3. **Print the file path** after saving so the user knows where to find it.
 4. **Never truncate any section.** If a table has 121 rows, write all 121 rows.
+5. **Send to Discord:** Copy the report file to the workspace (`/root/.openclaw/workspace/`) and send it to Discord so the user can download it directly from the chat.
 
 ### Report File Format
 
