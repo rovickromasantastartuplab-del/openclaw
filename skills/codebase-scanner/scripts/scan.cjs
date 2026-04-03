@@ -2861,469 +2861,273 @@ function main() {
   }
 }
 
-// ─── Report File Generator ───────────────────────────────────────────────────
+// ─── Report File Generator (v3.0 System Understanding) ────────────────────
 
 function generateReportFile(result, target) {
   const projectName = path.basename(target);
-  const now = new Date().toISOString().replace('T', ' ').split('.')[0] + ' UTC';
   const deep = result.deep || {};
   let md = '';
 
-  md += `# ${projectName} — Scan Report\n\n`;
-  md += `> Scanned: ${now}\n`;
-  md += `> Target: \`${target}\`\n\n---\n\n`;
+  // Header
+  md += `# ${projectName} — system understanding report\n\n`;
+  md += `> scanned source: ${target}\n`;
+  md += `> scanned ref: develop\n`;
+  md += `> scan mode: exhaustive markdown report\n`;
+  md += `> confidence note: Static codebase analysis. Runtime behavior, actual API contracts, and live data flows are inferred from code patterns and may differ from production reality.\n\n---\n\n`;
 
-  // Project Overview
-  md += `## Project Overview\n\n`;
-  md += `| Field | Value |\n|---|---|\n`;
-  if (result.overview) {
-    md += `| Name | ${result.overview.name || projectName} |\n`;
-    md += `| Type | ${result.overview.type || 'Unknown'} |\n`;
-    if (result.overview.description) md += `| Description | ${result.overview.description} |\n`;
-    if (result.overview.version) md += `| Version | ${result.overview.version} |\n`;
-    if (result.overview.license) md += `| License | ${result.overview.license} |\n`;
-  }
-  if (result.stack) {
-    const parts = [];
-    if (result.stack.languages?.length) parts.push(result.stack.languages.join(', '));
-    if (result.stack.frameworks?.length) parts.push(result.stack.frameworks.join(', '));
-    if (result.stack.runtimes?.length) parts.push(`Runtime: ${result.stack.runtimes.join(', ')}`);
-    md += `| Stack | ${parts.join(' · ') || 'N/A'} |\n`;
-  }
-  md += `\n`;
+  // Executive Summary
+  md += `## executive summary\n\n`;
+  const summaryLines = [];
+  if (result.overview?.type) summaryLines.push(`type: ${result.overview.type}`);
+  if (result.stack?.frameworks?.length) summaryLines.push(`frameworks: ${result.stack.frameworks.join(', ')}`);
+  if (deep.apiEndpoints?.length) summaryLines.push(`API surface: ${deep.apiEndpoints.length} routes`);
+  if (deep.databaseSchema?.tables?.length) summaryLines.push(`database: ${deep.databaseSchema.tables.length} tables`);
+  if (deep.serviceLayer?.length) summaryLines.push(`services: ${deep.serviceLayer.length} classes`);
+  if (deep.keyFiles?.controllers?.length) summaryLines.push(`controllers: ${deep.keyFiles.controllers.length}`);
+  if (deep.eventSystem?.events?.length) summaryLines.push(`events: ${deep.eventSystem.events.length}`);
+  md += summaryLines.join(' · ') + '.\n\n';
 
-  // Directory Structure
-  md += `## Directory Structure\n\n`;
+  // Repository Identity and Scope
+  md += `## repository identity and scope\n\n`;
+  md += `| aspect | value |\n|---|---|\n`;
+  md += `| project name | ${result.overview?.name || projectName} |\n`;
+  md += `| project type | ${result.overview?.type || 'unknown'} |\n`;
+  if (result.stack?.languages?.length) md += `| languages | ${result.stack.languages.join(', ')} |\n`;
+  if (result.stack?.frameworks?.length) md += `| frameworks | ${result.stack.frameworks.join(', ')} |\n`;
+  md += `| scan boundary | full recursive scan of ${target} |\n`;
+  md += `| confidence | static analysis only — runtime behavior inferred\n\n`;
+
+  // Top-Level Structure
+  md += `## top-level structure\n\n`;
   if (result.structure) {
-    md += `\`\`\`\n${result.structure}\`\`\`\n\n`;
-  } else {
-    md += `*(not scanned — use --structure or --full flag)*\n\n`;
+    const lines = result.structure.split('\n').slice(0, 40);
+    md += '```\n' + lines.join('\n') + '\n```\n\n';
+    md += '*fact: directory structure from filesystem walk*\n\n';
   }
 
-  // Database Tables
-  md += `## Database Tables\n\n`;
+  // Runtime Entrypoints
+  md += `## runtime entrypoints\n\n`;
+  if (deep.apiEndpoints?.length) md += `- HTTP API: ${deep.apiEndpoints.length} routes registered\n`;
+  if (deep.keyFiles?.controllers?.length) md += `- Controllers: ${deep.keyFiles.controllers.length} controller classes\n`;
+  const cmdDir = path.join(target, 'app', 'Console', 'Commands');
+  if (fs.existsSync(cmdDir)) {
+    try {
+      const cmds = scanDirRecursive(cmdDir, '', 3).filter(f => f.endsWith('.php')).length;
+      if (cmds) md += `- CLI Commands: ${cmds} Artisan commands\n`;
+    } catch {}
+  }
+  const jobsDir = path.join(target, 'app', 'Jobs');
+  if (fs.existsSync(jobsDir)) {
+    try {
+      const jobs = scanDirRecursive(jobsDir, '', 3).filter(f => f.endsWith('.php')).length;
+      if (jobs) md += `- Queue Jobs: ${jobs} job classes\n`;
+    } catch {}
+  }
+  md += '\n';
+
+  // API and Interface Surface
+  md += `## api and interface surface\n\n`;
+  if (deep.apiEndpoints?.length) {
+    md += `### HTTP Routes (${deep.apiEndpoints.length} total)\n\n`;
+    md += '| method | path | controller | evidence |\n|---|---|---|---|\n';
+    deep.apiEndpoints.slice(0, 80).forEach(ep => {
+      const ctrl = ep.controller ? ep.controller + (ep.action ? '@' + ep.action : '') : (ep.action || '-');
+      const evidence = ep.middleware ? 'middleware: ' + ep.middleware : 'fact: route definition found';
+      md += `| ${ep.method} | ${ep.path} | ${ctrl} | ${evidence} |\n`;
+    });
+    if (deep.apiEndpoints.length > 80) md += '\n*weak inference: ' + (deep.apiEndpoints.length - 80) + ' more routes omitted*\n';
+    md += '\n';
+  }
+  if (deep.keyFiles?.controllers?.length) {
+    md += `### Controllers (${deep.keyFiles.controllers.length})\n\n`;
+    md += '| controller | file |\n|---|---|\n';
+    deep.keyFiles.controllers.slice(0, 30).forEach(c => md += `| ${c.class || '-'} | ${c.file || '-'} |\n`);
+    md += '\n';
+  }
+
+  // Database and Persistence Model
+  md += `## database and persistence model\n\n`;
   const dbTables = Array.isArray(deep.databaseSchema) ? deep.databaseSchema : (deep.databaseSchema?.tables || []);
   if (dbTables.length) {
-    md += `| # | Table Name |\n|---|---|\n`;
-    dbTables.forEach((t, i) => {
-      md += `| ${i + 1} | \`${t.name || t}\` |\n`;
-    });
-  } else {
-    md += `*(no database tables detected — use --deep flag)*\n`;
+    md += `### Tables (${dbTables.length})\n\n`;
+    md += '| table | evidence |\n|---|---|\n';
+    dbTables.slice(0, 50).forEach(t => md += `| ${t.name || t} | fact: migration found |\n`);
+    if (dbTables.length > 50) md += '\n*weak inference: ' + (dbTables.length - 50) + ' more tables omitted*\n';
+    md += '\n';
   }
-  md += `\n`;
-
-  // API Routes
-  md += `## API Routes\n\n`;
-  if (deep.apiEndpoints && deep.apiEndpoints.length) {
-    md += `| Method | Path | Controller@Method | Middleware |\n|---|---|---|---|\n`;
-    deep.apiEndpoints.forEach(ep => {
-      const ctrl = ep.controller ? `${ep.controller}${ep.action ? '@' + ep.action : ''}` : (ep.action || '-');
-      const mw = ep.middleware || '-';
-      md += `| ${ep.method} | ${ep.path} | ${ctrl} | ${mw} |\n`;
-    });
-  } else {
-    md += `*(no routes detected — use --deep flag)*\n`;
-  }
-  md += `\n`;
-
-  // Controllers
-  md += `## Controllers\n\n`;
-  const controllers = Array.isArray(deep.keyFiles?.controllers) ? deep.keyFiles.controllers : [];
-  if (controllers.length) {
-    md += `| File Name | Class Name |\n|---|---|\n`;
-    controllers.forEach(c => {
-      md += `| ${c.file || c.name || '-'} | ${c.class || c.name || '-'} |\n`;
-    });
-  } else {
-    md += `*(no controllers detected — use --deep flag)*\n`;
-  }
-  md += `\n`;
-
-  // Models
-  md += `## Models\n\n`;
   const dbModels = Array.isArray(deep.databaseSchema?.models) ? deep.databaseSchema.models : [];
   if (dbModels.length) {
-    md += `| File Name | Class Name | Table |\n|---|---|---|\n`;
-    dbModels.forEach(m => {
-      md += `| ${m.file || '-'} | ${m.class || '-'} | ${m.table || '-'} |\n`;
+    md += `### ORM Models (${dbModels.length})\n\n`;
+    md += '| model | table | relationships |\n|---|---|---|\n';
+    dbModels.slice(0, 20).forEach(m => {
+      const rels = m.relationships?.length ? m.relationships.join(', ') : '-';
+      md += `| ${m.class || '-'} | ${m.table || '-'} | ${rels} |\n`;
     });
-  } else {
-    md += `*(no models detected — use --deep flag)*\n`;
+    md += '\n';
   }
-  md += `\n`;
 
-  // Services
-  md += `## Services\n\n`;
-  if (deep.serviceLayer && deep.serviceLayer.length) {
-    md += `| File Name | Class Name | Public Methods |\n|---|---|---|\n`;
-    deep.serviceLayer.forEach(s => {
-      const methods = s.methods ? s.methods.join(', ') : '-';
-      md += `| ${s.file} | ${s.class} | ${methods} |\n`;
+  // Auth, Permissions, and Tenancy
+  md += `## auth, permissions, and tenancy\n\n`;
+  if (deep.auth?.guards?.length) {
+    md += '### Authentication Guards\n\n';
+    deep.auth.guards.forEach(g => md += `- fact: guard '${g.name || g}' driver '${g.driver || 'default'}'\n`);
+    md += '\n';
+  }
+  if (deep.auth?.providers?.length) {
+    md += '### User Providers\n\n';
+    deep.auth.providers.forEach(p => md += `- fact: provider '${p.name || p}' driver '${p.driver || 'default'}'\n`);
+    md += '\n';
+  }
+  if (deep.auth?.middleware?.length) {
+    md += '### Auth Middleware\n\n';
+    deep.auth.middleware.forEach(m => md += `- fact: middleware '${m}' registered\n`);
+    md += '\n';
+  }
+  const envContent = readFileSafe(path.join(target, '.env'), 5000) || '';
+  if (envContent.includes('TENANT') || envContent.includes('MULTI_TENANT')) {
+    md += '- strong inference: multi-tenancy detected from .env\n';
+  }
+  if (!deep.auth) md += '*weak inference: no explicit auth config — may use Laravel default*\n\n';
+
+  // Services, Jobs, Events, and Automation
+  md += `## services, jobs, events, and automation\n\n`;
+  if (deep.serviceLayer?.length) {
+    md += `### Services (${deep.serviceLayer.length})\n\n`;
+    deep.serviceLayer.slice(0, 15).forEach(s => {
+      const methods = s.methods ? s.methods.join(', ') : 'unknown';
+      md += `- ${s.class}: ${methods}\n`;
     });
-  } else {
-    md += `*(no services detected — use --deep flag)*\n`;
+    md += '\n';
   }
-  md += `\n`;
-
-  // Events & Listeners
-  md += `## Events & Listeners\n\n`;
-  if (deep.eventSystem) {
-    const events = deep.eventSystem.events || [];
-    const listeners = deep.eventSystem.listeners || [];
-    if (events.length || listeners.length) {
-      md += `| Event Class | Listener Class |\n|---|---|\n`;
-      // Try to pair events with listeners
-      const eventListenerMap = deep.eventSystem.eventListenerMap || {};
-      if (Object.keys(eventListenerMap).length) {
-        Object.entries(eventListenerMap).forEach(([eventName, listenerNames]) => {
-          listenerNames.forEach(ln => {
-            md += `| ${eventName} | ${ln} |\n`;
-          });
-        });
-      } else {
-        events.forEach(e => {
-          const matchingListeners = listeners.filter(l => l.handles === e.name);
-          if (matchingListeners.length) {
-            matchingListeners.forEach(l => {
-              md += `| ${e.name} | ${l.name} |\n`;
-            });
-          } else {
-            md += `| ${e.name} | - |\n`;
-          }
-        });
-        // Listeners without matching events
-        listeners.filter(l => !events.some(e => e.name === l.handles)).forEach(l => {
-          md += `| - | ${l.name} |\n`;
-        });
-      }
-    } else {
-      md += `*(no events detected — use --deep flag)*\n`;
-    }
-  } else {
-    md += `*(no events detected — use --deep flag)*\n`;
+  if (deep.eventSystem?.events?.length) {
+    md += `### Events (${deep.eventSystem.events.length})\n\n`;
+    deep.eventSystem.events.slice(0, 12).forEach(e => md += `- ${e.name || e}\n`);
+    md += '\n';
   }
-  md += `\n`;
+  if (deep.eventSystem?.listeners?.length) {
+    md += `### Listeners (${deep.eventSystem.listeners.length})\n\n`;
+    deep.eventSystem.listeners.slice(0, 12).forEach(l => md += `- ${l.name}: handles ${l.handles || 'unknown'}\n`);
+    md += '\n';
+  }
+  if (deep.dataFlow?.jobs?.length) {
+    md += `### Queue Jobs\n\n`;
+    deep.dataFlow.jobs.slice(0, 8).forEach(j => md += `- ${j.name}: queue=${j.shouldQueue}, retries=${j.retries}\n`);
+    md += '\n';
+  }
 
-  // Authentication
-  md += `## Authentication\n\n`;
-  if (deep.auth) {
-    const auth = deep.auth;
-    if (auth.guards && auth.guards.length) {
-      md += `| Guard | Driver |\n|---|---|\n`;
-      auth.guards.forEach(g => {
-        md += `| ${g.name || g} | ${g.driver || '-'} |\n`;
-      });
-      md += `\n`;
-    }
-    if (auth.providers && auth.providers.length) {
-      md += `| Provider | Driver |\n|---|---|\n`;
-      auth.providers.forEach(p => {
-        md += `| ${p.name || p} | ${p.driver || '-'} |\n`;
-      });
-      md += `\n`;
-    }
-    if (auth.middleware && auth.middleware.length) {
-      md += `**Middleware:**\n`;
-      auth.middleware.forEach(m => {
-        md += `- ${m}\n`;
-      });
-      md += `\n`;
-    }
-    if (auth.details && auth.details.length) {
-      md += `**Features:**\n`;
-      auth.details.forEach(d => {
-        md += `- ${d}\n`;
-      });
-      md += `\n`;
-    }
+  // Integrations and External Dependencies
+  md += `## integrations and external dependencies\n\n`;
+  if (deep.integrations?.apis?.length) {
+    md += '### External API Clients\n\n';
+    deep.integrations.apis.slice(0, 8).forEach(a => {
+      const auth = a.hasAuth ? 'fact: auth found' : 'weak inference: internal';
+      md += `- ${a.name}: ${a.endpoints?.slice(0, 2).join(', ') || 'unknown'} — ${auth}\n`;
+    });
+    md += '\n';
+  }
+  if (deep.integrations?.externalServices?.length) {
+    md += '### External Services\n\n';
+    deep.integrations.externalServices.forEach(e => {
+      if (e.type === 'env' && e.keys?.length) md += `- fact: ${e.keys.join(', ')} in .env\n`;
+    });
+    md += '\n';
+  }
+  if (deep.integrations?.webhooks?.length) {
+    md += '### Webhooks\n\n';
+    deep.integrations.webhooks.slice(0, 5).forEach(w => md += `- ${w.type}: ${w.name || w.file || 'unknown'}\n`);
+    md += '\n';
+  }
+  if (!deep.integrations?.apis?.length && !deep.integrations?.externalServices?.length) {
+    md += '*weak inference: no explicit external integrations detected*\n\n';
+  }
+
+  // Module Boundaries and Dependency Map
+  md += `## module boundaries and dependency map\n\n`;
+  if (deep.moduleBoundaries?.modules?.length) {
+    md += '| module | type | files | depends on |\n|---|---|---|---|\n';
+    deep.moduleBoundaries.modules.slice(0, 12).forEach(m => {
+      const deps = m.dependsOn?.length ? m.dependsOn.join(', ') : '-';
+      md += `| ${m.name} | ${m.type || 'module'} | ${m.files || m.phpFiles || 0} | ${deps} |\n`;
+    });
+    md += '\n*fact: module structure from app/ directory analysis*\n\n';
   } else {
-    md += `*(no auth info detected — use --deep flag)*\n\n`;
+    md += '*weak inference: no explicit module boundaries detected*\n\n';
+  }
+
+  // Configuration and Environment
+  md += `## configuration and environment\n\n`;
+  if (deep.envVars?.length) {
+    md += '### Key Environment Variables\n\n';
+    md += '| variable | default | evidence |\n|---|---|---|\n';
+    deep.envVars.slice(0, 15).forEach(ev => md += `| ${ev.name} | ${ev.default || '-'} | fact: in .env or config |\n`);
+    md += '\n';
+  }
+  if (deep.config?.length) {
+    md += '### Config Files\n\n';
+    deep.config.forEach(c => md += `- ${c.file}: ${c.type || 'config'}\n`);
+    md += '\n';
   }
 
   // Architecture Observations
-  md += `## Architecture Observations\n\n`;
-  if (deep.architecture && deep.architecture.patterns && deep.architecture.patterns.length) {
-    deep.architecture.patterns.forEach(p => {
-      md += `- **${p.pattern}**: ${p.evidence || 'detected'}\n`;
-    });
-    md += `\n`;
+  md += `## architecture observations\n\n`;
+  if (deep.architecture?.patterns?.length) {
+    deep.architecture.patterns.forEach(p => md += `- ${p.pattern}: ${p.evidence || 'detected'} — strong inference\n`);
   }
-  // Add general observations from other modules
-  const observations = [];
-  if (result.metrics) {
-    if (result.metrics.testFileCount < result.metrics.totalFiles * 0.01) {
-      observations.push(`⚠️ Low test coverage: ${result.metrics.testFileCount} test files for ${result.metrics.totalFiles} source files`);
-    }
-    if (result.metrics.totalFiles > 2000) {
-      observations.push(`📊 Large codebase: ${result.metrics.totalFiles} files, ${result.metrics.totalLines.toLocaleString()} lines`);
-    }
+  if (result.metrics?.totalFiles > 2000) {
+    md += `- strong inference: large codebase (${result.metrics.totalFiles} files) suggests enterprise/SaaS\n`;
   }
-  if (deep.apiEndpoints && deep.apiEndpoints.length > 100) {
-    observations.push(`🌐 Large API surface: ${deep.apiEndpoints.length} routes`);
+  if (deep.codeQuality?.smells?.length) {
+    md += `- strong inference: ${deep.codeQuality.smells.length} code quality issues detected\n`;
   }
-  if (deep.databaseSchema && deep.databaseSchema.length > 50) {
-    observations.push(`🗄️ Complex schema: ${deep.databaseSchema.length} tables`);
-  }
-  if (observations.length) {
-    observations.forEach(o => {
-      md += `- ${o}\n`;
-    });
-  }
-  if ((!deep.architecture?.patterns?.length) && !observations.length) {
-    md += `*(no observations — use --deep flag for deeper analysis)*\n`;
-  }
-  md += `\n`;
+  md += '\n';
 
-  // Business Logic
-  md += `## Business Logic\n\n`;
-  const bl = deep.businessLogic || {};
-  if (bl.rules?.length) {
-    md += `### Validation Rules\n\n`;
-    md += `| Rule Class | File |\n|---|---|\n`;
-    bl.rules.forEach(r => {
-      md += `| ${r.name} | ${r.file} |\n`;
+  // Unknowns and Confidence Boundaries
+  md += `## unknowns and confidence boundaries\n\n`;
+  md += '- Runtime behavior: weak inference from code patterns, not verified\n';
+  md += '- API contracts: weak inference from routes, actual format unknown\n';
+  md += '- Data flows: weak inference, no runtime verification\n';
+  md += '- External integrations: strong inference from code, live status unknown\n';
+  md += '- Performance: weak inference, no benchmarking\n';
+  md += '- Security: weak inference from config, no penetration testing\n\n';
+
+  // Appendices
+  md += `## appendices\n\n`;
+
+  // Appendix A: Routes
+  if (deep.apiEndpoints?.length) {
+    md += `### A. Full Route Inventory (${deep.apiEndpoints.length})\n\n`;
+    md += '| method | path | controller@method |\n|---|---|---|\n';
+    deep.apiEndpoints.forEach(ep => {
+      const ctrl = ep.controller ? ep.controller + (ep.action ? '@' + ep.action : '') : (ep.action || '-');
+      md += `| ${ep.method} | ${ep.path} | ${ctrl} |\n`;
     });
-    md += `\n`;
-  }
-  if (bl.validators?.length) {
-    md += `### Form Requests\n\n`;
-    md += `| Request | File | Has Rules |\n|---|---|---|\n`;
-    bl.validators.forEach(v => {
-      md += `| ${v.name} | ${v.file} | ${v.rules ? '✓' : '✗'} |\n`;
-    });
-    md += `\n`;
-  }
-  if (bl.services?.length) {
-    md += `### Domain Services\n\n`;
-    md += `| Service | File | Methods |\n|---|---|---|\n`;
-    bl.services.slice(0, 20).forEach(s => {
-      md += `| ${s.name} | ${s.file} | ${(s.methods || []).join(', ')} |\n`;
-    });
-    md += `\n`;
-  }
-  if (bl.modelAccessors?.length) {
-    md += `### Model Accessors/Mutators/Scopes\n\n`;
-    md += `| Model | Accessors | Mutators | Scopes |\n|---|---|---|---|\n`;
-    bl.modelAccessors.slice(0, 15).forEach(m => {
-      md += `| ${m.name} | ${(m.accessors || []).join(', ')} | ${(m.mutators || []).join(', ')} | ${(m.scopes || []).join(', ')} |\n`;
-    });
-    md += `\n`;
-  }
-  if (bl.controllerLogic?.length) {
-    md += `### Complex Controllers (>10 conditionals)\n\n`;
-    md += `| Controller | File | Complexity |\n|---|---|---|\n`;
-    bl.controllerLogic.forEach(c => {
-      md += `| ${c.name} | ${c.file} | ${c.complexity} |\n`;
-    });
-    md += `\n`;
-  }
-  if (!bl.rules?.length && !bl.validators?.length && !bl.services?.length && !bl.modelAccessors?.length && !bl.controllerLogic?.length) {
-    md += `*(no business logic detected — use --deep flag)*\n\n`;
+    md += '\n';
   }
 
-  // Data Flow
-  md += `## Data Flow\n\n`;
-  const df = deep.dataFlow || {};
-  if (df.caches?.length) {
-    md += `### Cache Configuration\n\n`;
-    df.caches.forEach(c => {
-      if (c.type === 'config') {
-        md += `- **Stores:** ${(c.stores || []).join(', ') || 'default'}\n`;
-        md += `- **Driver:** ${c.driver}\n`;
-      } else {
-        md += `- ${c.name} (${c.file})\n`;
-      }
-    });
-    md += `\n`;
-  }
-  if (df.queues?.length) {
-    md += `### Queue Configuration\n\n`;
-    df.queues.forEach(q => {
-      if (q.type === 'config') {
-        md += `- **Connections:** ${(q.connections || []).join(', ') || 'sync'}\n`;
-        md += `- **Default:** ${q.defaultQueue}\n`;
-      }
-    });
-    md += `\n`;
-  }
-  if (df.jobs?.length) {
-    md += `### Queue Jobs\n\n`;
-    md += `| Job | File | ShouldQueue | Retries |\n|---|---|---|---|\n`;
-    df.jobs.slice(0, 20).forEach(j => {
-      md += `| ${j.name} | ${j.file} | ${j.shouldQueue ? '✓' : '✗'} | ${j.retries} |\n`;
-    });
-    md += `\n`;
-  }
-  if (df.batchJobs?.length) {
-    md += `### Batch Jobs\n\n`;
-    df.batchJobs.forEach(b => {
-      md += `- ${b.file}\n`;
-    });
-    md += `\n`;
-  }
-  if (df.middlewares?.length) {
-    md += `### Middleware\n\n`;
-    const m = df.middlewares[0];
-    if (m.global?.length) md += `**Global:** ${m.global.join(', ')}\n`;
-    if (m.web?.length) md += `**Web:** ${m.web.join(', ')}\n`;
-    if (m.api?.length) md += `**API:** ${m.api.join(', ')}\n`;
-    if (m.routeMiddleware?.length) md += `**Route:** ${m.routeMiddleware.join(', ')}\n`;
-    md += `\n`;
-  }
-  if (!df.caches?.length && !df.queues?.length && !df.jobs?.length && !df.middlewares?.length) {
-    md += `*(no data flow patterns detected — use --deep flag)*\n\n`;
+  // Appendix B: Tables
+  if (dbTables.length) {
+    md += `### B. Full Table Inventory (${dbTables.length})\n\n`;
+    dbTables.forEach((t, i) => md += `${i + 1}. \`${t.name || t}\`\n`);
+    md += '\n';
   }
 
-  // Integrations
-  md += `## Integrations\n\n`;
-  const integ = deep.integrations || {};
-  if (integ.apis?.length) {
-    md += `### External API Clients\n\n`;
-    md += `| Service | File | Has Auth | Endpoints |\n|---|---|---|---|\n`;
-    integ.apis.slice(0, 15).forEach(a => {
-      md += `| ${a.name} | ${a.file} | ${a.hasAuth ? '✓' : '✗'} | ${(a.endpoints || []).slice(0, 2).join(', ')} |\n`;
-    });
-    md += `\n`;
-  }
-  if (integ.webhooks?.length) {
-    md += `### Webhooks\n\n`;
-    integ.webhooks.forEach(w => {
-      if (w.type === 'routes') {
-        md += `**Routes:** ${(w.routes || []).join(', ')}\n`;
-      } else {
-        md += `- ${w.name} (${w.file}) - methods: ${(w.methods || []).join(', ')}\n`;
-      }
-    });
-    md += `\n`;
-  }
-  if (integ.externalServices?.length) {
-    md += `### External Services (from .env)\n\n`;
-    integ.externalServices.forEach(e => {
-      if (e.type === 'env') {
-        md += `**Configured:** ${e.keys.join(', ')}\n`;
-      } else if (e.type === 'socialite') {
-        md += `**Socialite:** ${e.providers.join(', ')}\n`;
-      }
-    });
-    md += `\n`;
-  }
-  if (!integ.apis?.length && !integ.webhooks?.length && !integ.externalServices?.length) {
-    md += `*(no integrations detected — use --deep flag)*\n\n`;
+  // Appendix C: Services
+  if (deep.serviceLayer?.length) {
+    md += `### C. Full Service Inventory (${deep.serviceLayer.length})\n\n`;
+    deep.serviceLayer.forEach(s => md += `- ${s.class}: ${s.file}\n`);
+    md += '\n';
   }
 
-  // Performance
-  md += `## Performance Analysis\n\n`;
-  const perf = deep.performance || {};
-  if (perf.eagerLoads?.length) {
-    md += `### Eloquent Relationships (for eager loading)\n\n`;
-    md += `| Model | Relationships |\n|---|---|\n`;
-    perf.eagerLoads.forEach(e => {
-      md += `| ${e.model} | ${e.relationships.join(', ')} |\n`;
+  // Appendix D: Events-Listeners
+  if (deep.eventSystem?.eventListenerMap && Object.keys(deep.eventSystem.eventListenerMap).length) {
+    md += '### D. Event-Listener Map\n\n';
+    Object.entries(deep.eventSystem.eventListenerMap).forEach(([event, listeners]) => {
+      md += `- ${event} → ${listeners.join(', ')}\n`;
     });
-    md += `\n`;
-  }
-  if (perf.n1Queries?.length) {
-    md += `### Potential N+1 Queries (all() without limit)\n\n`;
-    md += `| Controller | File | all() Calls |\n|---|---|---|\n`;
-    perf.n1Queries.slice(0, 10).forEach(n => {
-      md += `| ${n.controller} | ${n.file} | ${n.allCalls} |\n`;
-    });
-    md += `\n`;
-  }
-  if (perf.missingIndexes?.length) {
-    md += `### Missing Indexes (foreign keys)\n\n`;
-    perf.missingIndexes.forEach(m => {
-      md += `- ${m.type}: ${m.count} columns\n`;
-      m.details?.forEach(d => {
-        md += `  - ${d.table}.${d.column}\n`;
-      });
-    });
-    md += `\n`;
-  }
-  if (perf.slowQueries?.length) {
-    md += `### Unoptimized Raw Queries\n\n`;
-    perf.slowQueries.slice(0, 10).forEach(s => {
-      md += `- ${s.file} — ${s.rawQueries} raw queries${s.noLimit ? ' (no LIMIT)' : ''}\n`;
-    });
-    md += `\n`;
-  }
-  if (!perf.eagerLoads?.length && !perf.n1Queries?.length && !perf.missingIndexes?.length && !perf.slowQueries?.length) {
-    md += `*(no performance issues detected — use --deep flag)*\n\n`;
+    md += '\n';
   }
 
-  // Code Quality
-  md += `## Code Quality\n\n`;
-  const cq = deep.codeQuality || {};
-  if (cq.deadCode?.length) {
-    md += `### Dead Code\n\n`;
-    cq.deadCode.forEach(d => {
-      md += `- **${d.type}**: ${d.file} (${d.count} instances)\n`;
-    });
-    md += `\n`;
-  }
-  if (cq.complexity?.length) {
-    md += `### High Complexity Files (>15% branching)\n\n`;
-    md += `| File | Lines | Complexity Score |\n|---|---|---|\n`;
-    cq.complexity.slice(0, 15).forEach(c => {
-      md += `| ${c.file} | ${c.lines} | ${c.complexity} |\n`;
-    });
-    md += `\n`;
-  }
-  if (cq.smells?.length) {
-    md += `### Code Smells\n\n`;
-    cq.smells.slice(0, 15).forEach(s => {
-      md += `- **${s.type}**: ${s.file}${s.methods ? ` (${s.methods} methods)` : ''}\n`;
-    });
-    md += `\n`;
-  }
-  if (!cq.deadCode?.length && !cq.complexity?.length && !cq.smells?.length) {
-    md += `*(no code quality issues detected — use --deep flag)*\n\n`;
-  }
-
-  // Deployment
-  md += `## Deployment\n\n`;
-  const dep = deep.deployment || {};
-  if (dep.docker?.length) {
-    md += `### Docker\n\n`;
-    dep.docker.forEach(d => {
-      if (d.baseImage) {
-        md += `- **${d.file}**: FROM ${d.baseImage}\n`;
-      } else if (d.type === 'compose') {
-        md += `- **${d.file}**: ${(d.services || []).join(', ')}\n`;
-      } else {
-        md += `- ${d.file}\n`;
-      }
-    });
-    md += `\n`;
-  }
-  if (dep.ciCd?.length) {
-    md += `### CI/CD\n\n`;
-    dep.ciCd.forEach(c => {
-      if (c.type === 'github') {
-        md += `- **${c.file}**: ${(c.jobs || []).join(', ')} | tests: ${c.hasTests ? '✓' : '✗'} | lint: ${c.hasLint ? '✓' : '✗'}\n`;
-      } else {
-        md += `- ${c.file} (${c.type})\n`;
-      }
-    });
-    md += `\n`;
-  }
-  if (dep.infra?.length) {
-    md += `### Infrastructure\n\n`;
-    dep.infra.forEach(i => {
-      if (i.kind) {
-        md += `- ${i.file}: ${i.kind}\n`;
-      } else if (i.resources?.length) {
-        md += `- ${i.file}: ${i.resources.join(', ')}\n`;
-      }
-    });
-    md += `\n`;
-  }
-  if (!dep.docker?.length && !dep.ciCd?.length && !dep.infra?.length) {
-    md += `*(no deployment config detected — use --deep flag)*\n\n`;
-  }
-
-  md += `---\n\n*Generated by Codebase Scanner v2.0.0*\n`;
+  md += '---\n\n*Generated by Codebase Scanner v3.0.0 — system understanding approach*\n';
 
   return md;
 }
